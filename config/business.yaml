@@ -1,0 +1,29 @@
+# Configuration du business — Généré par AgentKit
+negocio:
+  nombre: "SAMANTAN"
+  descripcion: >
+    Fournisseur de verres ophtalmiques professionnels spécialisé dans le surfaçage
+    numérique FreeForm. SAMANTAN distribue des verres progressifs, bifocaux, double
+    foyer et unifocaux aux opticiens professionnels. Slogan : "Vos verres sur mesure".
+  horario: "24h/24, 7j/7"
+  telefono: "+221 77 543 43 16"
+  whatsapp: "+221 76 133 35 33"
+  email: "contact@samantan.net"
+  sitio_web: "www.samantan.net"
+  direccion: "3050 aux HLM Angle Mousse, DAKAR, SÉNÉGAL"
+
+agente:
+  nombre: "Tima"
+  idioma: "français"
+  tono: "Commercial et persuasif"
+  casos_de_uso:
+    - "Répondre aux questions fréquentes"
+    - "Prendre des rendez-vous"
+    - "Qualifier et traiter des prospects"
+    - "Prendre des commandes"
+    - "Support après-vente"
+
+metadata:
+  creado: "2026-05-21"
+  version: "1.0"
+  proveedor_whatsapp: "twilio"
