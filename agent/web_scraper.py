@@ -30,7 +30,7 @@ def _extraire_texte(html: str) -> str:
     """Extrait le texte propre d'une page HTML."""
     try:
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "meta", "link", "svg",
                          "img", "noscript", "iframe", "header", "footer", "nav"]):
             tag.decompose()
@@ -49,7 +49,7 @@ def _extraire_produits_actifs(html: str) -> str:
     """
     try:
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
 
         produits_actifs = []
 
@@ -229,7 +229,7 @@ def _extraire_liens_produits(html: str, base_url: str) -> list[tuple[str, str]]:
     liens = []
     try:
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
 
         # Chercher les liens produits dans différentes structures
         selecteurs = [
@@ -284,7 +284,7 @@ def _extraire_details_produit(html: str) -> str:
     """
     try:
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
 
         details = []
 
@@ -452,7 +452,7 @@ async def _fetch_catalogue_raw() -> str:
 
         # ── Étape 3 : Parser les produits actifs depuis le texte ──────────
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html_catalogue, "lxml")
+        soup = BeautifulSoup(html_catalogue, "html.parser")
         all_text = soup.get_text(separator="\n", strip=True)
         lignes = all_text.split("\n")
 

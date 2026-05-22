@@ -70,6 +70,27 @@ async def health_check():
     return {"status": "ok", "agent": "Tima", "business": "SAMANTAN"}
 
 
+@app.get("/debug")
+async def debug():
+    """État interne du serveur — utile pour diagnostiquer en production."""
+    from agent.web_scraper import _catalogue_cache, _CACHE_TTL_SECS
+    import time
+    cache_age = int(time.monotonic() - _catalogue_cache["ts"]) if _catalogue_cache["data"] else None
+    return {
+        "provider": proveedor.__class__.__name__,
+        "meta_phone_id": os.getenv("META_PHONE_NUMBER_ID", "NON CONFIGURÉ"),
+        "meta_token_set": bool(os.getenv("META_ACCESS_TOKEN")),
+        "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "catalogue_cache": {
+            "loaded": _catalogue_cache["data"] is not None,
+            "size_chars": len(_catalogue_cache["data"]) if _catalogue_cache["data"] else 0,
+            "age_seconds": cache_age,
+            "ttl_seconds": int(_CACHE_TTL_SECS),
+        },
+        "environment": ENVIRONMENT,
+    }
+
+
 @app.get("/webhook")
 async def webhook_verificacion(request: Request):
     """Vérification GET du webhook (requis par Meta, no-op pour Twilio)."""
