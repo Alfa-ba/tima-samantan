@@ -262,66 +262,71 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     mensajes.append({"role": "user", "content": mensaje})
 
     try:
-        # ── Appel Claude avec outils ───────────────────────────────────────
+        # ── Appel Claude avec outils (boucle multi-tours) ──────────────────
+        messages_en_cours = mensajes[:]
+        MAX_TOURS = 5  # sécurité anti-boucle infinie
+
         response = await client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=system_prompt,
-            messages=mensajes,
+            messages=messages_en_cours,
             tools=TOOLS
         )
 
-        # ── Si Claude veut utiliser un outil ──────────────────────────────
-        if response.stop_reason == "tool_use":
-            logger.info("Claude utilise un outil...")
-
-            # Trouver le bloc tool_use
-            tool_block = next(
-                (b for b in response.content if b.type == "tool_use"), None
-            )
-
-            if tool_block:
-                # Exécuter l'outil
-                resultat_outil = await _executer_outil(
-                    tool_block.name,
-                    tool_block.input
-                )
-                logger.info(f"Résultat outil ({len(resultat_outil)} caractères) récupéré")
-
-                # Continuer la conversation avec le résultat de l'outil
-                mensajes_avec_outil = mensajes + [
-                    {"role": "assistant", "content": response.content},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_block.id,
-                                "content": resultat_outil
-                            }
-                        ]
-                    }
-                ]
-
-                response2 = await client.messages.create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=1024,
-                    system=system_prompt,
-                    messages=mensajes_avec_outil,
-                    tools=TOOLS
-                )
-
-                respuesta = _extraire_texte(response2.content)
+        for tour in range(MAX_TOURS):
+            # ── Réponse textuelle directe → on retourne ────────────────────
+            if response.stop_reason != "tool_use":
+                respuesta = _extraire_texte(response.content)
                 if not respuesta:
-                    respuesta = obtener_mensaje_error()
-                logger.info(f"Réponse avec catalogue ({response2.usage.output_tokens} tokens)")
+                    respuesta = obtener_mensaje_fallback()
+                logger.info(
+                    f"Réponse finale tour {tour} "
+                    f"({response.usage.input_tokens} in / {response.usage.output_tokens} out)"
+                )
                 return respuesta
 
-        # ── Réponse directe sans outil ─────────────────────────────────────
+            # ── Claude veut utiliser un ou plusieurs outils ────────────────
+            logger.info(f"Tour {tour+1} : Claude utilise un outil...")
+
+            # Collecter TOUS les blocs tool_use de cette réponse
+            tool_blocks = [b for b in response.content if b.type == "tool_use"]
+
+            if not tool_blocks:
+                break
+
+            # Exécuter chaque outil et construire les tool_results
+            tool_results = []
+            for tool_block in tool_blocks:
+                resultat = await _executer_outil(tool_block.name, tool_block.input)
+                logger.info(
+                    f"  ↳ {tool_block.name} → {len(resultat)} chars"
+                )
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_block.id,
+                    "content": resultat
+                })
+
+            # Ajouter la réponse assistant + les résultats des outils
+            messages_en_cours = messages_en_cours + [
+                {"role": "assistant", "content": response.content},
+                {"role": "user", "content": tool_results}
+            ]
+
+            # Appel suivant avec les résultats des outils
+            response = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=messages_en_cours,
+                tools=TOOLS
+            )
+
+        # ── Sécurité : si on a épuisé les tours ───────────────────────────
         respuesta = _extraire_texte(response.content)
         if not respuesta:
-            respuesta = obtener_mensaje_fallback()
-        logger.info(f"Réponse directe ({response.usage.input_tokens} in / {response.usage.output_tokens} out)")
+            respuesta = obtener_mensaje_error()
         return respuesta
 
     except Exception as e:
