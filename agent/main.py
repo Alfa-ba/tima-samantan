@@ -311,12 +311,37 @@ async def test_login():
 async def debug():
     """État interne du serveur — utile pour diagnostiquer en production."""
     from agent.web_scraper import _catalogue_cache, _CACHE_TTL_SECS
+    from pathlib import Path
     import time
     cache_age = int(time.monotonic() - _catalogue_cache["ts"]) if _catalogue_cache["data"] else None
+
+    # ── État des fichiers knowledge/ ──────────────────────────────────────────
+    knowledge_dir = Path("knowledge")
+    fichiers_knowledge = {}
+    if knowledge_dir.exists():
+        for f in sorted(knowledge_dir.glob("*.md")):
+            try:
+                stat = f.stat()
+                fichiers_knowledge[f.name] = {
+                    "taille_bytes": stat.st_size,
+                    "taille_kb": round(stat.st_size / 1024, 1),
+                }
+            except Exception:
+                fichiers_knowledge[f.name] = {"erreur": "inaccessible"}
+
+    # ── System prompt size estimate ────────────────────────────────────────────
+    try:
+        from agent.brain import cargar_system_prompt
+        sp = cargar_system_prompt()
+        system_prompt_chars = len(sp)
+    except Exception as e:
+        system_prompt_chars = f"erreur: {e}"
+
     return {
         "provider": proveedor.__class__.__name__,
         "meta_phone_id": os.getenv("META_PHONE_NUMBER_ID", "NON CONFIGURÉ"),
         "meta_token_set": bool(os.getenv("META_ACCESS_TOKEN")),
+        "meta_token_debut": (os.getenv("META_ACCESS_TOKEN") or "")[:20] + "..." if os.getenv("META_ACCESS_TOKEN") else None,
         "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
         "catalogue_cache": {
             "loaded": _catalogue_cache["data"] is not None,
@@ -324,8 +349,34 @@ async def debug():
             "age_seconds": cache_age,
             "ttl_seconds": int(_CACHE_TTL_SECS),
         },
+        "knowledge_files": fichiers_knowledge,
+        "system_prompt_chars": system_prompt_chars,
+        "prix_status": _prix_status,
         "environment": ENVIRONMENT,
     }
+
+
+@app.get("/test-tima")
+async def test_tima(message: str = "Bonjour, quels sont vos progressifs ?"):
+    """
+    Teste la réponse de Tima directement (sans WhatsApp).
+    Appelle Claude et retourne la réponse — utile pour déboguer sans smartphone.
+
+    Exemples :
+      /test-tima?message=Quels sont les progressifs disponibles ?
+      /test-tima?message=Quels sont mes prix pour OPTIQUE PONTY ?
+    """
+    from agent.brain import generar_respuesta
+    try:
+        respuesta = await generar_respuesta(message, [])
+        return {
+            "message_entrant": message,
+            "reponse_tima": respuesta,
+            "longueur": len(respuesta),
+        }
+    except Exception as e:
+        logger.error(f"test-tima erreur : {e}")
+        return {"erreur": str(e), "message_entrant": message}
 
 
 ## ── Suivi du scraping prix ────────────────────────────────────────────────────

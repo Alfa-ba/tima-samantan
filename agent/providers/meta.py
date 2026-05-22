@@ -51,9 +51,10 @@ class ProveedorMeta(ProveedorWhatsApp):
                     elif tipo == "audio":
                         # Vocal WhatsApp — télécharger et transcrire
                         media_id = msg.get("audio", {}).get("id", "")
-                        if media_id and self.access_token:
+                        token_actuel = os.getenv("META_ACCESS_TOKEN") or self.access_token
+                        if media_id and token_actuel:
                             from agent.transcriber import transcrire_vocal_meta
-                            texto = await transcrire_vocal_meta(media_id, self.access_token)
+                            texto = await transcrire_vocal_meta(media_id, token_actuel)
                             if texto:
                                 logger.info(f"Vocal transcrit de {msg.get('from', '')} : {texto[:60]}...")
                                 mensajes.append(MensajeEntrante(
@@ -69,12 +70,14 @@ class ProveedorMeta(ProveedorWhatsApp):
 
     async def enviar_mensaje(self, telefono: str, mensaje: str) -> bool:
         """Envoie un message via Meta WhatsApp Cloud API."""
-        if not self.access_token or not self.phone_number_id:
+        # Lire le token frais à chaque envoi (resilient aux rotations de token sur Railway)
+        access_token = os.getenv("META_ACCESS_TOKEN") or self.access_token
+        if not access_token or not self.phone_number_id:
             logger.warning("META_ACCESS_TOKEN ou META_PHONE_NUMBER_ID non configurés")
             return False
         url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
         headers = {
-            "Authorization": f"Bearer {self.access_token}",
+            "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
         }
         payload = {
@@ -83,8 +86,18 @@ class ProveedorMeta(ProveedorWhatsApp):
             "type": "text",
             "text": {"body": mensaje},
         }
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
-                logger.error(f"Erreur Meta API : {r.status_code} — {r.text}")
+                logger.error(
+                    f"Erreur Meta API : {r.status_code} — {r.text[:300]}\n"
+                    f"Token utilisé : {access_token[:20]}..."
+                )
+                if r.status_code == 401:
+                    logger.error(
+                        "TOKEN EXPIRÉ — Mets à jour META_ACCESS_TOKEN sur Railway : "
+                        "https://developers.facebook.com/tools/accesstoken/"
+                    )
+            else:
+                logger.info(f"Message WhatsApp envoyé à {telefono} ✓")
             return r.status_code == 200
