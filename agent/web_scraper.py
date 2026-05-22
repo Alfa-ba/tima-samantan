@@ -425,7 +425,8 @@ async def _fetch_catalogue_raw() -> str:
         headers=HEADERS
     ) as client:
 
-        # ── Étape 1 : Login (POST → 302 avec cookie de session) ───────────
+        # ── Étape 1 : Login ────────────────────────────────────────────────
+        # GET la page login d'abord (cookies de session initiaux)
         await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
         r_login = await client.post(
             f"{SAMANTAN_URL}/connexion-samantan",
@@ -436,13 +437,24 @@ async def _fetch_catalogue_raw() -> str:
             },
             timeout=15.0
         )
-        logger.info(f"Login : {r_login.status_code} | {r_login.headers.get('location', '')}")
+        location = r_login.headers.get("location", "")
+        # Succès = 302 vers une page qui n'est pas /connexion-samantan
+        # Certains serveurs CakePHP retournent aussi 200 avec redirection JS
+        login_ok = (r_login.status_code == 302 and "connexion" not in location) \
+                   or (r_login.status_code == 200 and location == "")
+        logger.info(
+            f"Login : status={r_login.status_code} | location='{location}' | "
+            f"cookies={list(client.cookies.keys())} | success={login_ok}"
+        )
 
         # ── Étape 2 : Charger la page des produits actifs ──────────────────
         try:
             r = await client.get(CATALOGUE_ACTIFS_URL, follow_redirects=True, timeout=25.0)
             if r.status_code != 200 or "connexion" in str(r.url):
-                logger.error(f"Catalogue inaccessible : {r.status_code} | {r.url}")
+                logger.error(
+                    f"Catalogue inaccessible : {r.status_code} | {r.url} — "
+                    f"Login ok={login_ok}, email={LOGIN_EMAIL}, pwd_len={len(LOGIN_PASSWORD)}"
+                )
                 return "Catalogue momentanément inaccessible. Consulter www.samantan.net"
             html_catalogue = r.text
             logger.info(f"Catalogue chargé : {len(html_catalogue)} caractères")
