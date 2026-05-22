@@ -276,6 +276,127 @@ async def debug():
     }
 
 
+@app.get("/debug-post-formulaire")
+async def debug_post_formulaire():
+    """
+    Diagnostic : soumet le formulaire /nouvelle-ordonnance pour le 1er opticien
+    et retourne le corps brut de la réponse (erreurs CakePHP, validation, etc.)
+    Sans créer de commande — uniquement pour voir ce que le serveur renvoie.
+    """
+    import httpx
+    from bs4 import BeautifulSoup
+
+    SAMANTAN_URL_D = os.getenv("SAMANTAN_SITE_URL", "https://samantan.net")
+    email = os.getenv("SAMANTAN_LOGIN_EMAIL")
+    pwd = os.getenv("SAMANTAN_LOGIN_PASSWORD")
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as c:
+        # ── Login ──────────────────────────────────────────────────────────────
+        await c.get(f"{SAMANTAN_URL_D}/connexion-samantan", timeout=10.0)
+        r_login = await c.post(
+            f"{SAMANTAN_URL_D}/connexion-samantan",
+            data={"_method": "POST",
+                  "data[User][email]": email,
+                  "data[User][password]": pwd},
+            timeout=15.0,
+        )
+        if r_login.status_code != 302:
+            return {"erreur": f"Login échoué : {r_login.status_code}"}
+
+        # ── GET formulaire ─────────────────────────────────────────────────────
+        r_form = await c.get(
+            f"{SAMANTAN_URL_D}/nouvelle-ordonnance",
+            follow_redirects=True, timeout=15.0
+        )
+        soup = BeautifulSoup(r_form.text, "html.parser")
+
+        # ── Extraire TOUS les champs du formulaire (y compris _Token) ──────────
+        form_el = soup.find("form")
+        payload: dict[str, str] = {}
+        all_fields_info = []
+
+        if form_el:
+            for el in form_el.find_all(["input", "select", "textarea"]):
+                name = el.get("name", "")
+                if not name:
+                    continue
+                if el.name == "input":
+                    t = el.get("type", "text").lower()
+                    val = el.get("value", "")
+                    payload[name] = val
+                    all_fields_info.append({
+                        "name": name, "type": t, "value": val[:80]
+                    })
+                elif el.name == "select":
+                    opts = el.find_all("option")
+                    all_opts = [{"v": o.get("value",""), "l": o.get_text(strip=True)} for o in opts]
+                    first_val = next((o["v"] for o in all_opts if o["v"].strip()), "")
+                    payload[name] = first_val
+                    all_fields_info.append({
+                        "name": name, "type": "select",
+                        "options_count": len(opts),
+                        "first_value": first_val,
+                        "options_preview": all_opts[:5]
+                    })
+                elif el.name == "textarea":
+                    payload[name] = ""
+                    all_fields_info.append({"name": name, "type": "textarea"})
+
+        # ── Trouver le 1er opticien ────────────────────────────────────────────
+        opticien_field = None
+        opticien_val = None
+        opticien_label = None
+        for info in all_fields_info:
+            if info.get("type") == "select" and info.get("options_count", 0) > 3:
+                n_lower = info["name"].lower()
+                if any(kw in n_lower for kw in ["user", "opticien", "client"]):
+                    opticien_field = info["name"]
+                    opticien_val = info["first_value"]
+                    opticien_label = (info.get("options_preview") or [{}])[1].get("l", "?") \
+                        if len(info.get("options_preview", [])) > 1 else "premier"
+                    break
+
+        if opticien_field:
+            payload[opticien_field] = opticien_val
+
+        # ── POST avec le payload complet ───────────────────────────────────────
+        r_post = await c.post(
+            f"{SAMANTAN_URL_D}/nouvelle-ordonnance",
+            data=payload,
+            follow_redirects=True,
+            timeout=20.0,
+        )
+
+        # Extraire le texte utile de la réponse
+        soup_rep = BeautifulSoup(r_post.text, "html.parser")
+        # Chercher les messages d'erreur CakePHP
+        erreurs_cake = []
+        for el in soup_rep.select(".error-message, .alert, .alert-danger, .error, .errors, .flash-message"):
+            t = el.get_text(strip=True)
+            if t:
+                erreurs_cake.append(t[:200])
+
+        # Texte brut (premier 6000 chars pour diagnostic)
+        for tag in soup_rep(["script", "style", "meta", "link", "svg", "img"]):
+            tag.decompose()
+        texte_brut = soup_rep.get_text(separator="\n", strip=True)
+        lignes_utiles = [l.strip() for l in texte_brut.split("\n") if len(l.strip()) > 3]
+
+        return {
+            "login_status": r_login.status_code,
+            "form_get_status": r_form.status_code,
+            "form_chars": len(r_form.text),
+            "champs_formulaire": all_fields_info,
+            "payload_envoye": {k: v[:60] for k, v in payload.items()},
+            "post_status": r_post.status_code,
+            "post_url_finale": str(r_post.url),
+            "post_chars": len(r_post.text),
+            "erreurs_detectees": erreurs_cake,
+            "opticien_utilise": {"champ": opticien_field, "valeur": opticien_val, "label": opticien_label},
+            "reponse_texte": "\n".join(lignes_utiles[:120]),
+        }
+
+
 @app.get("/simuler-prix")
 async def simuler_prix():
     """
