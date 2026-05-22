@@ -798,3 +798,341 @@ async def fetch_ordonnances_samantan(recherche: str = "") -> str:
             return "\n".join(filtrées)
 
     return data
+
+
+# ── Simulation de prix par opticien ───────────────────────────────────────────
+
+async def simuler_prix_par_opticien() -> dict:
+    """
+    Pour chaque opticien du réseau SAMANTAN :
+      1. Soumet une ordonnance test standard sur /nouvelle-ordonnance (étape 1)
+      2. Capture le prix affiché dans la réponse (page récapitulatif/preview)
+      3. NE confirme PAS la commande — aucune commande réelle créée
+      4. Sauvegarde knowledge/prix_opticiens.md avec les résultats
+
+    Ordonnance test utilisée :
+      OD : Sph +0.00 / Cyl -0.25 / Axe 90
+      OG : Sph +0.00 / Cyl -0.25 / Axe 90
+      Addition : +1.00 | DIP : 32/32 | Hauteur : 20/20
+
+    Retourne un dict avec résultats bruts + chemin du fichier sauvegardé.
+    """
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+
+    # Valeurs Rx de test — universelles, ne génèrent pas d'erreur de validation
+    RX_TEST = {
+        "sph": "0.00",
+        "cyl": "-0.25",
+        "axe": "90",
+        "add": "1.00",
+        "dip_od": "32",
+        "dip_og": "32",
+        "hauteur_od": "20",
+        "hauteur_og": "20",
+    }
+
+    resultats = []
+
+    async with httpx.AsyncClient(
+        follow_redirects=False, timeout=30.0, headers=HEADERS
+    ) as client:
+
+        # ── Login ──────────────────────────────────────────────────────────────
+        await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+        r_login = await client.post(
+            f"{SAMANTAN_URL}/connexion-samantan",
+            data={
+                "_method": "POST",
+                "data[User][email]": LOGIN_EMAIL,
+                "data[User][password]": LOGIN_PASSWORD,
+            },
+            timeout=15.0,
+        )
+        if r_login.status_code not in [200, 302]:
+            return {"erreur": f"Login échoué : {r_login.status_code}", "resultats": []}
+        logger.info("simuler_prix_par_opticien : login OK")
+
+        # ── Charger le formulaire /nouvelle-ordonnance ─────────────────────────
+        r_form = await client.get(
+            f"{SAMANTAN_URL}/nouvelle-ordonnance",
+            follow_redirects=True,
+            timeout=15.0,
+        )
+        if r_form.status_code != 200 or "connexion" in str(r_form.url):
+            return {
+                "erreur": f"Formulaire inaccessible : {r_form.status_code} | {r_form.url}",
+                "resultats": [],
+            }
+
+        soup = BeautifulSoup(r_form.text, "html.parser")
+
+        # ── Trouver le sélecteur d'opticien ───────────────────────────────────
+        opticien_field_name = None
+        opts_opticiens = []
+
+        for sel_el in soup.find_all("select"):
+            name = sel_el.get("name", "")
+            opts = sel_el.find_all("option")
+            real_opts = [o for o in opts if o.get("value", "").strip()]
+
+            if len(real_opts) < 2:
+                continue
+
+            name_lower = name.lower()
+            opts_text = " ".join(o.get_text(strip=True).lower() for o in opts)
+
+            is_opticien_field = (
+                any(kw in name_lower for kw in ["user", "opticien", "client", "boutique"])
+                or any(kw in opts_text for kw in [
+                    "opticien", "boutique", "lunetterie", "optique", "vision",
+                    "pharmacie", "sante", "santé"
+                ])
+            )
+
+            if is_opticien_field:
+                opticien_field_name = name
+                opts_opticiens = [
+                    {"value": o.get("value", ""), "label": o.get_text(strip=True)}
+                    for o in real_opts
+                ]
+                logger.info(
+                    f"Sélecteur opticien : '{name}' | {len(opts_opticiens)} opticiens"
+                )
+                break
+
+        if not opticien_field_name:
+            # Fallback : prendre le plus grand select (probablement la liste clients)
+            biggest = max(
+                soup.find_all("select"),
+                key=lambda s: len(s.find_all("option")),
+                default=None,
+            )
+            if biggest and len(biggest.find_all("option")) > 3:
+                opticien_field_name = biggest.get("name", "")
+                opts_opticiens = [
+                    {"value": o.get("value", ""), "label": o.get_text(strip=True)}
+                    for o in biggest.find_all("option")
+                    if o.get("value", "").strip()
+                ]
+                logger.info(
+                    f"Fallback sélecteur : '{opticien_field_name}' | {len(opts_opticiens)} options"
+                )
+
+        if not opticien_field_name or not opts_opticiens:
+            return {
+                "erreur": "Sélecteur d'opticien introuvable dans le formulaire",
+                "selects_trouves": [
+                    {"name": s.get("name"), "options": len(s.find_all("option"))}
+                    for s in soup.find_all("select")
+                ],
+                "resultats": [],
+            }
+
+        # ── Construire le payload de base depuis tous les champs du form ───────
+        form_el = soup.find("form")
+        base_payload: dict[str, str] = {}
+
+        if form_el:
+            for el in form_el.find_all(["input", "select", "textarea"]):
+                name = el.get("name", "")
+                if not name:
+                    continue
+                if el.name == "input":
+                    t = el.get("type", "text").lower()
+                    if t in ["hidden", "text", "number", "submit"]:
+                        base_payload[name] = el.get("value", "")
+                elif el.name == "select":
+                    first = next(
+                        (o.get("value", "") for o in el.find_all("option")
+                         if o.get("value", "").strip()),
+                        "",
+                    )
+                    base_payload[name] = first
+                elif el.name == "textarea":
+                    base_payload[name] = el.get_text(strip=True)
+
+        # Toujours inclure _method=POST (CakePHP)
+        base_payload.setdefault("_method", "POST")
+
+        # ── Injecter les valeurs Rx test dans les champs correspondants ────────
+        # Mapping : fragment de nom de champ → valeur Rx
+        RX_MAPPING = [
+            (["sph_od", "sphere_od", "s_od", "sph_d", "sphere_d", "od_sph", "od_sphere"], RX_TEST["sph"]),
+            (["sph_og", "sphere_og", "s_og", "sph_g", "sphere_g", "og_sph", "og_sphere"], RX_TEST["sph"]),
+            (["cyl_od", "cylindre_od", "cy_od", "cyl_d", "od_cyl", "od_cyl"], RX_TEST["cyl"]),
+            (["cyl_og", "cylindre_og", "cy_og", "cyl_g", "og_cyl"], RX_TEST["cyl"]),
+            (["axe_od", "axis_od", "ax_od", "axe_d", "od_axe"], RX_TEST["axe"]),
+            (["axe_og", "axis_og", "ax_og", "axe_g", "og_axe"], RX_TEST["axe"]),
+            (["add_od", "addition_od", "add"], RX_TEST["add"]),
+            (["add_og", "addition_og"], RX_TEST["add"]),
+            (["dip_od", "dp_od", "dipod", "diod"], RX_TEST["dip_od"]),
+            (["dip_og", "dp_og", "dipog", "diog"], RX_TEST["dip_og"]),
+            (["dip"], "64"),  # binoculaire
+            (["hauteur_od", "height_od", "haut_od", "h_od"], RX_TEST["hauteur_od"]),
+            (["hauteur_og", "height_og", "haut_og", "h_og"], RX_TEST["hauteur_og"]),
+        ]
+
+        for field_name in list(base_payload.keys()):
+            # Extraire la partie significative du nom CakePHP : data[Model][field] → field
+            key_part = field_name.split("[")[-1].rstrip("]").lower()
+            for fragments, value in RX_MAPPING:
+                if any(frag in key_part or key_part in frag for frag in fragments):
+                    base_payload[field_name] = value
+                    break
+
+        logger.info(
+            f"Payload de base construit : {len(base_payload)} champs | "
+            f"opticiens à simuler : {len(opts_opticiens)}"
+        )
+
+        # ── Simulation pour chaque opticien ───────────────────────────────────
+        for opticien in opts_opticiens[:30]:  # max 30 opticiens
+            payload = dict(base_payload)
+            payload[opticien_field_name] = opticien["value"]
+
+            logger.info(
+                f"→ Simulation : {opticien['label']} (id={opticien['value']})"
+            )
+
+            try:
+                r_sim = await client.post(
+                    f"{SAMANTAN_URL}/nouvelle-ordonnance",
+                    data=payload,
+                    follow_redirects=True,
+                    timeout=20.0,
+                )
+
+                soup_rep = BeautifulSoup(r_sim.text, "html.parser")
+
+                # ── Extraire les prix de la réponse ───────────────────────────
+                prix_trouves: list[str] = []
+
+                # 1. Texte contenant FCFA / CFA
+                for tag in soup_rep.find_all(
+                    string=re.compile(r'\d[\d\s]*(?:F\.?CFA|FCFA|CFA)', re.IGNORECASE)
+                ):
+                    t = tag.strip()
+                    if t and len(t) < 200:
+                        prix_trouves.append(t)
+
+                # 2. Éléments avec class "prix", "price", "montant", "total"
+                for css in [".prix", ".price", ".montant", ".total", ".amount",
+                            "#prix", "#total", "#montant", ".cout", ".tarif"]:
+                    for el in soup_rep.select(css):
+                        t = el.get_text(strip=True)
+                        if t and re.search(r'\d', t):
+                            prix_trouves.append(f"[{css}] {t}")
+
+                # 3. Colonnes de tableau labellisées "prix / price / montant / total"
+                for table in soup_rep.find_all("table"):
+                    headers = [th.get_text(strip=True).lower()
+                               for th in table.find_all("th")]
+                    for i, h in enumerate(headers):
+                        if any(kw in h for kw in [
+                            "prix", "price", "montant", "total", "coût", "tarif", "fcfa"
+                        ]):
+                            for row in table.find_all("tr"):
+                                cells = row.find_all("td")
+                                if i < len(cells):
+                                    val = cells[i].get_text(strip=True)
+                                    if val and re.search(r'\d{3,}', val):
+                                        prix_trouves.append(f"[tableau:{h}] {val}")
+
+                # 4. Fallback : tout nombre ≥ 4 chiffres dans le body
+                if not prix_trouves:
+                    for tag in soup_rep.find_all(
+                        string=re.compile(r'\b\d{4,}\b')
+                    ):
+                        parent = tag.parent
+                        parent_class = " ".join(
+                            parent.get("class", []) if parent else []
+                        ).lower()
+                        if any(kw in parent_class for kw in [
+                            "prix", "price", "cost", "montant", "total", "amount"
+                        ]):
+                            prix_trouves.append(tag.strip())
+
+                # ── Détecter si c'est une page de confirmation (étape 2) ───────
+                page_texte = soup_rep.get_text(separator=" ", strip=True).lower()
+                est_confirmation = any(kw in page_texte for kw in [
+                    "confirmer", "confirmation", "récapitulatif",
+                    "résumé", "valider la commande", "étape 2",
+                    "step 2", "please confirm", "submit order",
+                ])
+
+                # Enlever les doublons
+                prix_uniques = list(dict.fromkeys(p for p in prix_trouves if p))
+
+                resultats.append({
+                    "opticien": opticien["label"],
+                    "id": opticien["value"],
+                    "status": r_sim.status_code,
+                    "url_finale": str(r_sim.url),
+                    "est_confirmation": est_confirmation,
+                    "prix": prix_uniques[:15],
+                    "page_chars": len(r_sim.text),
+                    "erreur": None,
+                })
+
+                if est_confirmation:
+                    logger.info(
+                        f"  ✓ Page confirmation détectée — simulation ARRÊTÉE "
+                        f"(pas de commande réelle)"
+                    )
+                else:
+                    logger.info(
+                        f"  → {r_sim.status_code} | {len(prix_uniques)} prix trouvés"
+                    )
+
+                await asyncio.sleep(0.8)  # Politesse envers le serveur
+
+            except Exception as e:
+                logger.warning(f"Erreur simulation {opticien['label']} : {e}")
+                resultats.append({
+                    "opticien": opticien["label"],
+                    "id": opticien["value"],
+                    "status": None,
+                    "prix": [],
+                    "erreur": str(e),
+                })
+
+    # ── Sauvegarder dans knowledge/prix_opticiens.md ───────────────────────────
+    if resultats:
+        from datetime import datetime
+        lignes = [
+            "# Prix par opticien — SAMANTAN",
+            f"_Simulation effectuée le {datetime.now().strftime('%Y-%m-%d %H:%M')}_",
+            "_Ordonnance test : OD/OG Sph 0.00 / Cyl -0.25 / Axe 90 | Add +1.00 | DIP 32/32 | Haut 20/20_",
+            f"_Opticiens simulés : {len(resultats)}_",
+            "",
+        ]
+        for r in resultats:
+            lignes.append(f"## {r['opticien']} (ID: {r.get('id', '?')})")
+            if r.get("erreur"):
+                lignes.append(f"- Erreur : {r['erreur']}")
+            elif r.get("prix"):
+                lignes.append("- Prix détectés :")
+                for p in r["prix"]:
+                    lignes.append(f"  • {p}")
+                if r.get("est_confirmation"):
+                    lignes.append("  _(page de confirmation — simulation arrêtée avant envoi)_")
+            else:
+                lignes.append(
+                    f"- Aucun prix détecté "
+                    f"(status: {r.get('status')}, chars: {r.get('page_chars')})"
+                )
+            lignes.append("")
+
+        knowledge_dir = KNOWLEDGE_FILE.parent
+        knowledge_dir.mkdir(parents=True, exist_ok=True)
+        prix_file = knowledge_dir / "prix_opticiens.md"
+        prix_file.write_text("\n".join(lignes), encoding="utf-8")
+        logger.info(f"Prix opticiens sauvegardés → {prix_file} ✓ ({len(resultats)} opticiens)")
+
+    return {
+        "opticiens_simules": len(resultats),
+        "champ_opticien": opticien_field_name,
+        "resultats": resultats,
+        "fichier_sauvegarde": "knowledge/prix_opticiens.md" if resultats else None,
+    }

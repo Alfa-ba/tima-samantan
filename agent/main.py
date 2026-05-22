@@ -276,6 +276,26 @@ async def debug():
     }
 
 
+@app.get("/simuler-prix")
+async def simuler_prix():
+    """
+    Simule une ordonnance test pour chaque opticien du réseau SAMANTAN
+    et extrait les prix affichés — sans créer de commande réelle.
+
+    Ordonnance test : OD/OG Sph 0.00 / Cyl -0.25 / Axe 90 | Add +1.00 | DIP 32/32 | Haut 20/20
+
+    Sauvegarde les résultats dans knowledge/prix_opticiens.md
+    (automatiquement chargé dans le contexte de Tima).
+    """
+    from agent.web_scraper import simuler_prix_par_opticien
+    try:
+        resultat = await simuler_prix_par_opticien()
+        return resultat
+    except Exception as e:
+        logger.error(f"Erreur simuler_prix : {e}")
+        return {"erreur": str(e)}
+
+
 @app.get("/webhook")
 async def webhook_verificacion(request: Request):
     """Vérification GET du webhook (requis par Meta, no-op pour Twilio)."""
