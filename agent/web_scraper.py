@@ -138,3 +138,83 @@ async def scraper_samantan() -> str:
     )
     logger.info(f"Contenu SAMANTAN sauvegardé ({len(resultat)} caractères) → {KNOWLEDGE_FILE}")
     return resultat
+
+
+async def fetch_catalogue_samantan(recherche: str = "") -> str:
+    """
+    Accède au menu Catalogue de samantan.net en temps réel et retourne
+    les informations produits. Appelé par Tima quand un client pose
+    une question sur les produits SAMANTAN.
+
+    Args:
+        recherche: Mot-clé de recherche produit (ex: "progressif", "transitions")
+
+    Returns:
+        Texte avec les informations produits du catalogue
+    """
+    contenu = []
+
+    # URLs catalogue à essayer
+    pages_catalogue = [
+        ("Catalogue", "/catalogue"),
+        ("Produits", "/produits"),
+        ("Boutique", "/boutique"),
+        ("Shop", "/shop"),
+        ("Verres progressifs", "/catalogue/progressifs"),
+        ("Verres Transitions", "/catalogue/transitions"),
+        ("Verres unifocaux", "/catalogue/unifocaux"),
+    ]
+
+    # Si recherche spécifique, ajouter des URLs ciblées
+    if recherche:
+        mot = recherche.lower().replace(" ", "-")
+        pages_catalogue += [
+            (f"Recherche : {recherche}", f"/catalogue/{mot}"),
+            (f"Produit : {recherche}", f"/produits/{mot}"),
+            (f"Catégorie : {recherche}", f"/?s={recherche}"),
+        ]
+
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=25.0,
+        headers=HEADERS
+    ) as client:
+
+        # Connexion d'abord
+        try:
+            await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+            login_data = {
+                "email": LOGIN_EMAIL,
+                "password": LOGIN_PASSWORD,
+                "log": LOGIN_EMAIL,
+                "pwd": LOGIN_PASSWORD,
+                "username": LOGIN_EMAIL,
+            }
+            await client.post(
+                f"{SAMANTAN_URL}/connexion-samantan",
+                data=login_data,
+                timeout=15.0
+            )
+            logger.info("Connexion SAMANTAN pour catalogue...")
+        except Exception as e:
+            logger.warning(f"Connexion catalogue : {e}")
+
+        # Scraper les pages catalogue
+        for nom, chemin in pages_catalogue:
+            try:
+                r = await client.get(f"{SAMANTAN_URL}{chemin}", timeout=15.0)
+                if r.status_code == 200:
+                    texte = _extraire_texte(r.text)
+                    if len(texte) > 150:
+                        contenu.append(f"[{nom}]\n{texte[:4000]}")
+                        logger.info(f"Catalogue récupéré : {nom}")
+                        # Si on a trouvé du contenu catalogue, pas besoin de tout scraper
+                        if len(contenu) >= 3:
+                            break
+            except Exception as e:
+                logger.debug(f"Page catalogue {chemin} : {e}")
+
+    if not contenu:
+        return "Catalogue momentanément inaccessible. Consulter www.samantan.net directement."
+
+    return "\n\n".join(contenu)
