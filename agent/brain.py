@@ -3,6 +3,7 @@
 import os
 import yaml
 import logging
+from pathlib import Path
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
@@ -22,9 +23,38 @@ def cargar_config_prompts() -> dict:
         return {}
 
 
+def cargar_knowledge() -> str:
+    """Charge les fichiers de knowledge/ pour enrichir le contexte de Tima."""
+    knowledge_dir = Path("knowledge")
+    contenus = []
+
+    if not knowledge_dir.exists():
+        return ""
+
+    for fichier in sorted(knowledge_dir.glob("*.md")):
+        if fichier.name.startswith("."):
+            continue
+        try:
+            texte = fichier.read_text(encoding="utf-8").strip()
+            if texte and len(texte) > 50:
+                contenus.append(f"\n\n---\n{texte}")
+                logger.info(f"Knowledge chargé : {fichier.name} ({len(texte)} caractères)")
+        except Exception as e:
+            logger.warning(f"Impossible de lire {fichier} : {e}")
+
+    return "\n".join(contenus)
+
+
 def cargar_system_prompt() -> str:
     config = cargar_config_prompts()
-    return config.get("system_prompt", "Tu es Tima, assistante de SAMANTAN. Réponds en français.")
+    system_prompt = config.get("system_prompt", "Tu es Tima, assistante de SAMANTAN. Réponds en français.")
+
+    # Enrichir avec le contenu du site SAMANTAN (knowledge/)
+    knowledge = cargar_knowledge()
+    if knowledge:
+        system_prompt += f"\n\n## Contenu récupéré depuis le site SAMANTAN\nUtilise ces informations pour répondre aux questions sur SAMANTAN, ses produits et services.\n{knowledge}"
+
+    return system_prompt
 
 
 def obtener_mensaje_error() -> str:

@@ -28,6 +28,16 @@ async def lifespan(app: FastAPI):
     logger.info("Base de données initialisée")
     logger.info(f"Tima (SAMANTAN) démarrée sur le port {PORT}")
     logger.info(f"Fournisseur WhatsApp : {proveedor.__class__.__name__}")
+
+    # Récupérer le contenu du site SAMANTAN au démarrage
+    try:
+        from agent.web_scraper import scraper_samantan
+        logger.info("Récupération du contenu SAMANTAN en cours...")
+        await scraper_samantan()
+        logger.info("Contenu SAMANTAN chargé avec succès ✓")
+    except Exception as e:
+        logger.warning(f"Impossible de récupérer le site SAMANTAN : {e}")
+
     yield
 
 
