@@ -25,16 +25,93 @@ def _extraire_texte(html: str) -> str:
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "lxml")
-        # Supprimer les balises inutiles
         for tag in soup(["script", "style", "meta", "link", "svg",
                          "img", "noscript", "iframe", "header", "footer", "nav"]):
             tag.decompose()
         texte = soup.get_text(separator=" ", strip=True)
-        # Nettoyer espaces multiples
         texte = re.sub(r'\s+', ' ', texte).strip()
         return texte
     except Exception as e:
         logger.warning(f"Erreur extraction texte HTML : {e}")
+        return ""
+
+
+def _extraire_produits_actifs(html: str) -> str:
+    """
+    Extrait UNIQUEMENT les produits actifs/disponibles d'une page catalogue.
+    Ignore les produits en rupture, inactifs ou désactivés.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+
+        produits_actifs = []
+
+        # ── Stratégie 1 : WooCommerce standard ─────────────────────────────
+        # Chercher les produits avec classe 'instock' ou sans 'outofstock'
+        produits = soup.select(
+            "li.product, .product-item, .wc-block-grid__product, "
+            "article.product, .produit, .catalogue-item"
+        )
+
+        for produit in produits:
+            classes = " ".join(produit.get("class", []))
+
+            # Ignorer les produits hors stock ou inactifs
+            if any(mot in classes.lower() for mot in [
+                "outofstock", "out-of-stock", "inactif", "inactive",
+                "rupture", "epuise", "disabled", "unavailable"
+            ]):
+                continue
+
+            # Nettoyer et extraire le texte du produit
+            for tag in produit(["script", "style", "svg", "img"]):
+                tag.decompose()
+            texte = produit.get_text(separator=" ", strip=True)
+            texte = re.sub(r'\s+', ' ', texte).strip()
+
+            if len(texte) > 20:
+                produits_actifs.append(f"• {texte}")
+
+        # ── Stratégie 2 : Tableaux de produits ────────────────────────────
+        if not produits_actifs:
+            tables = soup.find_all("table")
+            for table in tables:
+                rows = table.find_all("tr")
+                for row in rows:
+                    texte = row.get_text(separator=" ", strip=True)
+                    texte = re.sub(r'\s+', ' ', texte).strip()
+                    # Ignorer les lignes qui mentionnent rupture/inactif
+                    if any(mot in texte.lower() for mot in [
+                        "rupture", "indisponible", "inactif", "out of stock"
+                    ]):
+                        continue
+                    if len(texte) > 20:
+                        produits_actifs.append(f"• {texte}")
+
+        # ── Stratégie 3 : Fallback — texte général filtré ─────────────────
+        if not produits_actifs:
+            for tag in soup(["script", "style", "meta", "link", "svg",
+                             "img", "noscript", "iframe", "header", "footer", "nav"]):
+                tag.decompose()
+            texte_complet = soup.get_text(separator="\n", strip=True)
+            lignes = []
+            for ligne in texte_complet.split("\n"):
+                ligne = ligne.strip()
+                if len(ligne) < 10:
+                    continue
+                if any(mot in ligne.lower() for mot in [
+                    "rupture", "indisponible", "inactif", "out of stock",
+                    "épuisé", "non disponible"
+                ]):
+                    continue
+                lignes.append(ligne)
+            return "\n".join(lignes[:150])
+
+        return "\n".join(produits_actifs)
+
+    except Exception as e:
+        logger.warning(f"Erreur extraction produits actifs : {e}")
         return ""
 
 
@@ -199,16 +276,18 @@ async def fetch_catalogue_samantan(recherche: str = "") -> str:
         except Exception as e:
             logger.warning(f"Connexion catalogue : {e}")
 
-        # Scraper les pages catalogue
+        # Scraper les pages catalogue — produits actifs uniquement
         for nom, chemin in pages_catalogue:
             try:
                 r = await client.get(f"{SAMANTAN_URL}{chemin}", timeout=15.0)
                 if r.status_code == 200:
-                    texte = _extraire_texte(r.text)
+                    # Utiliser l'extracteur de produits actifs
+                    texte = _extraire_produits_actifs(r.text)
                     if len(texte) > 150:
-                        contenu.append(f"[{nom}]\n{texte[:4000]}")
-                        logger.info(f"Catalogue récupéré : {nom}")
-                        # Si on a trouvé du contenu catalogue, pas besoin de tout scraper
+                        contenu.append(
+                            f"[Produits actifs — {nom}]\n{texte[:4000]}"
+                        )
+                        logger.info(f"Produits actifs récupérés : {nom}")
                         if len(contenu) >= 3:
                             break
             except Exception as e:
