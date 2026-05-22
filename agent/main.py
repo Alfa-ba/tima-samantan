@@ -29,14 +29,20 @@ async def lifespan(app: FastAPI):
     logger.info(f"Tima (SAMANTAN) démarrée sur le port {PORT}")
     logger.info(f"Fournisseur WhatsApp : {proveedor.__class__.__name__}")
 
-    # Récupérer le contenu du site SAMANTAN au démarrage
-    try:
-        from agent.web_scraper import scraper_samantan
-        logger.info("Récupération du contenu SAMANTAN en cours...")
-        await scraper_samantan()
-        logger.info("Contenu SAMANTAN chargé avec succès ✓")
-    except Exception as e:
-        logger.warning(f"Impossible de récupérer le site SAMANTAN : {e}")
+    # Récupérer le contenu du site SAMANTAN en arrière-plan (sans bloquer le démarrage)
+    import asyncio
+    async def _scraper_background():
+        try:
+            from agent.web_scraper import scraper_samantan
+            logger.info("Scraping SAMANTAN en arrière-plan...")
+            await asyncio.wait_for(scraper_samantan(), timeout=60.0)
+            logger.info("Contenu SAMANTAN chargé ✓")
+        except asyncio.TimeoutError:
+            logger.warning("Scraping SAMANTAN timeout (60s) — Tima fonctionne sans le site")
+        except Exception as e:
+            logger.warning(f"Scraping SAMANTAN échoué : {e} — Tima fonctionne normalement")
+
+    asyncio.create_task(_scraper_background())
 
     yield
 
