@@ -356,6 +356,32 @@ async def debug():
     }
 
 
+@app.get("/test-claude-direct")
+async def test_claude_direct():
+    """Test minimal de l'API Claude — sans system prompt, sans outils, sans knowledge."""
+    import anthropic
+    key = os.getenv("ANTHROPIC_API_KEY", "")
+    try:
+        c = anthropic.AsyncAnthropic(api_key=key)
+        r = await c.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "Dis juste: OK"}]
+        )
+        return {
+            "status": "ok",
+            "reponse": r.content[0].text if r.content else "",
+            "key_debut": key[:20] + "...",
+        }
+    except Exception as e:
+        return {
+            "status": "erreur",
+            "type": type(e).__name__,
+            "message": str(e),
+            "key_debut": key[:20] + "...",
+        }
+
+
 @app.get("/test-tima")
 async def test_tima(message: str = "Bonjour, quels sont vos progressifs ?"):
     """
@@ -376,7 +402,7 @@ async def test_tima(message: str = "Bonjour, quels sont vos progressifs ?"):
         }
     except Exception as e:
         logger.error(f"test-tima erreur : {e}")
-        return {"erreur": str(e), "message_entrant": message}
+        return {"erreur": str(e), "type": type(e).__name__, "message_entrant": message}
 
 
 ## ── Suivi du scraping prix ────────────────────────────────────────────────────
