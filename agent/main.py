@@ -83,6 +83,20 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_rafraichir_catalogue_24h())
 
+    async def _scraper_prix_background():
+        """Scrape les prix opticiens au démarrage (après les autres tâches)."""
+        try:
+            await asyncio.sleep(30)  # laisser le catalogue se charger d'abord
+            logger.info("Scraping prix opticiens au démarrage...")
+            await asyncio.wait_for(_run_scraping_prix(limite=0), timeout=600.0)
+            logger.info("Prix opticiens chargés ✓")
+        except asyncio.TimeoutError:
+            logger.warning("Scraping prix opticiens timeout (10min)")
+        except Exception as e:
+            logger.warning(f"Scraping prix opticiens : {e}")
+
+    asyncio.create_task(_scraper_prix_background())
+
     yield
 
 
@@ -276,24 +290,89 @@ async def debug():
     }
 
 
+## ── Suivi du scraping prix ────────────────────────────────────────────────────
+_prix_status: dict = {
+    "en_cours": False,
+    "termine": False,
+    "opticiens_traites": 0,
+    "total": 0,
+    "erreur": None,
+    "debut": None,
+    "fin": None,
+}
+
+
+async def _run_scraping_prix(limite: int = 0):
+    """Tâche de fond : scrape tous les prix et met à jour le statut."""
+    import asyncio
+    from datetime import datetime
+    from agent.web_scraper import scraper_prix_opticiens
+
+    global _prix_status
+    _prix_status["en_cours"] = True
+    _prix_status["termine"] = False
+    _prix_status["erreur"] = None
+    _prix_status["debut"] = datetime.now().strftime("%H:%M:%S")
+    _prix_status["fin"] = None
+
+    try:
+        logger.info(f"Scraping prix opticiens démarré en arrière-plan (limite={limite or 'tous'})")
+        resultat = await scraper_prix_opticiens(limite=limite)
+        _prix_status["opticiens_traites"] = resultat.get("opticiens_traites", 0)
+        _prix_status["termine"] = True
+        logger.info(f"Scraping prix terminé : {_prix_status['opticiens_traites']} opticiens")
+    except Exception as e:
+        _prix_status["erreur"] = str(e)
+        logger.error(f"Erreur scraping prix : {e}")
+    finally:
+        _prix_status["en_cours"] = False
+        _prix_status["fin"] = datetime.now().strftime("%H:%M:%S")
+
+
 @app.get("/scraper-prix-opticiens")
 async def scraper_prix_opticiens_endpoint(limite: int = 0):
     """
-    Scrape les prix personnalisés de chaque opticien depuis :
-      samantan.net/opticiens/prix-personaliser/{opticien_id}
+    Lance le scraping des prix en ARRIÈRE-PLAN et retourne immédiatement.
+    Le scraping de 145 opticiens prend ~4 min — pas de timeout HTTP.
 
-    Paramètre optionnel : ?limite=10 pour tester sur 10 opticiens d'abord.
-    Sans paramètre → traite les 145 opticiens complets (~3 min).
-
-    Sauvegarde knowledge/prix_opticiens.md chargé automatiquement par Tima.
+    Paramètre optionnel : ?limite=5 pour tester sur 5 opticiens.
+    Suivi de la progression : GET /status-prix
     """
-    from agent.web_scraper import scraper_prix_opticiens
-    try:
-        resultat = await scraper_prix_opticiens(limite=limite)
-        return resultat
-    except Exception as e:
-        logger.error(f"Erreur scraper_prix_opticiens : {e}")
-        return {"erreur": str(e)}
+    import asyncio
+
+    global _prix_status
+
+    if _prix_status["en_cours"]:
+        return {
+            "status": "deja_en_cours",
+            "message": f"Scraping en cours : {_prix_status['opticiens_traites']} opticiens traités",
+            "suivi": "/status-prix",
+        }
+
+    asyncio.create_task(_run_scraping_prix(limite=limite))
+
+    return {
+        "status": "demarre",
+        "message": (
+            f"Scraping des {'tous les' if not limite else str(limite)} opticiens "
+            f"lancé en arrière-plan."
+        ),
+        "suivi": "Vérifie la progression sur /status-prix",
+        "fichier": "knowledge/prix_opticiens.md (disponible quand terminé)",
+    }
+
+
+@app.get("/status-prix")
+async def status_prix():
+    """Suivi du scraping des prix opticiens lancé par /scraper-prix-opticiens."""
+    from pathlib import Path
+    fichier_ok = Path("knowledge/prix_opticiens.md").exists()
+    taille = Path("knowledge/prix_opticiens.md").stat().st_size if fichier_ok else 0
+    return {
+        **_prix_status,
+        "fichier_sauvegarde": fichier_ok,
+        "fichier_taille_bytes": taille,
+    }
 
 
 @app.get("/extraire-prix-js")
