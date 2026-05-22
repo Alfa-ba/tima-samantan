@@ -740,12 +740,33 @@ async def webhook_verificacion(request: Request):
     return {"status": "ok"}
 
 
+# ── Déduplication des messages (évite les doublons Meta) ──────────────────────
+_messages_traites: set = set()
+
+
+async def _traiter_message(msg, prov) -> None:
+    """Traite un message en arrière-plan — Claude + envoi réponse."""
+    try:
+        logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
+        historial = await obtener_historial(msg.telefono)
+        respuesta = await generar_respuesta(msg.texto, historial)
+        await guardar_mensaje(msg.telefono, "user", msg.texto)
+        await guardar_mensaje(msg.telefono, "assistant", respuesta)
+        await prov.enviar_mensaje(msg.telefono, respuesta)
+        logger.info(f"Réponse envoyée à {msg.telefono} : {respuesta[:80]}...")
+    except Exception as e:
+        logger.error(f"Erreur traitement message {msg.telefono} : {e}")
+
+
 @app.post("/webhook")
 async def webhook_handler(request: Request):
     """
-    Reçoit les messages WhatsApp, génère une réponse avec Claude
-    et la renvoie au client via Twilio.
+    Reçoit les messages WhatsApp et retourne 200 IMMÉDIATEMENT à Meta.
+    Le traitement (Claude + envoi) se fait en arrière-plan.
+    Déduplication par message_id pour éviter les doublons lors des retries Meta.
     """
+    import asyncio
+
     try:
         mensajes = await proveedor.parsear_webhook(request)
 
@@ -753,19 +774,24 @@ async def webhook_handler(request: Request):
             if msg.es_propio or not msg.texto:
                 continue
 
-            logger.info(f"Message de {msg.telefono} : {msg.texto}")
+            # ── Déduplication : ignorer si déjà traité ─────────────────────────
+            if msg.mensaje_id and msg.mensaje_id in _messages_traites:
+                logger.info(f"Message {msg.mensaje_id} déjà traité — doublon ignoré")
+                continue
 
-            historial = await obtener_historial(msg.telefono)
-            respuesta = await generar_respuesta(msg.texto, historial)
+            if msg.mensaje_id:
+                _messages_traites.add(msg.mensaje_id)
+                # Garder seulement les 500 derniers IDs en mémoire
+                if len(_messages_traites) > 500:
+                    plus_vieux = next(iter(_messages_traites))
+                    _messages_traites.discard(plus_vieux)
 
-            await guardar_mensaje(msg.telefono, "user", msg.texto)
-            await guardar_mensaje(msg.telefono, "assistant", respuesta)
+            # ── Traitement en arrière-plan → Meta reçoit 200 en < 1 seconde ───
+            asyncio.create_task(_traiter_message(msg, proveedor))
 
-            await proveedor.enviar_mensaje(msg.telefono, respuesta)
-            logger.info(f"Réponse envoyée à {msg.telefono} : {respuesta[:80]}...")
-
+        # Retour immédiat à Meta — évite les retries et doublons
         return {"status": "ok"}
 
     except Exception as e:
         logger.error(f"Erreur webhook : {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "ok"}  # Toujours 200 à Meta, même en cas d'erreur
