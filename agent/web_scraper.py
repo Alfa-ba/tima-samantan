@@ -802,6 +802,220 @@ async def fetch_ordonnances_samantan(recherche: str = "") -> str:
 
 # ── Prix personnalisés par opticien ───────────────────────────────────────────
 
+def _parser_page_prix_opticien(html: str, nom_opticien: str = "") -> dict:
+    """
+    Parse la page /opticiens/prix-personaliser/{id} et retourne toutes les données :
+      - Détail opticien (nom, email, tél, adresse, statut)
+      - Coefficients globaux (COEF, REM%, MAJ, REM.SUPP%, REM.STK%)
+      - Prix par produit (tableau Produit → Prix FCFA)
+      - Paliers remises par volume mensuel (Min/Max → %Remise)
+      - Pactoïe activée / 2ème-3ème paire activée
+      - Paramétrage 2ème et 3ème paire
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    data: dict = {"nom": nom_opticien}
+
+    # ── 1. Nom depuis le titre ─────────────────────────────────────────────────
+    for tag in ["h1", "h2", "h3"]:
+        el = soup.find(tag)
+        if el and "personnaliser" in el.get_text(strip=True).lower():
+            txt = el.get_text(strip=True)
+            # "Personnaliser les prix pour OPTIQUE PONTY" → "OPTIQUE PONTY"
+            data["nom"] = re.sub(
+                r"personnaliser\s+les\s+prix\s+pour\s*", "", txt, flags=re.IGNORECASE
+            ).strip() or nom_opticien
+            break
+
+    # ── 2. Détail opticien ─────────────────────────────────────────────────────
+    detail: dict = {}
+    champs_opticien = {"Nom", "Email", "Téléphone", "Adresse", "Inscription", "Statut"}
+    for row in soup.find_all("tr"):
+        cells = row.find_all(["td", "th"])
+        if len(cells) >= 2:
+            key = cells[0].get_text(strip=True)
+            val = cells[1].get_text(strip=True)
+            if key in champs_opticien:
+                detail[key] = val
+    data["detail"] = detail
+
+    # ── 3. Pactoïe et 2ème/3ème paire (selects OUI/NON) ──────────────────────
+    for sel_el in soup.find_all("select"):
+        # Chercher le texte le plus proche avant le select
+        label_el = sel_el.find_previous(string=re.compile(r'\w'))
+        label_txt = label_el.strip() if label_el else ""
+        selected = sel_el.find("option", selected=True)
+        if not selected:
+            selected = sel_el.find("option")
+        valeur = selected.get_text(strip=True) if selected else ""
+        if "pacto" in label_txt.lower():
+            data["pactoie"] = valeur
+        elif "2" in label_txt or "paire" in label_txt.lower():
+            data["paire_23_active"] = valeur
+
+    # ── 4. Coefficients globaux (COEF, REM, MAJ, REM.SUPP, REM.STK) ──────────
+    # Chercher les inputs avec labels autour (boutons colorés COEF / REM. / etc.)
+    coefficients: dict = {}
+    COEF_KEYWORDS = {
+        "coef": "COEF",
+        "rem": "REM_%",
+        "maj": "MAJ",
+        "supp": "REM_SUPP_%",
+        "stk":  "REM_STK_%",
+    }
+    for inp in soup.find_all("input"):
+        inp_type = inp.get("type", "text").lower()
+        if inp_type not in ["number", "text"]:
+            continue
+        # Chercher du texte dans les éléments frères/parents proches
+        context = ""
+        for sibling in inp.find_previous_siblings()[:3]:
+            context = sibling.get_text(strip=True).lower()
+            if context:
+                break
+        if not context and inp.parent:
+            context = inp.parent.get_text(strip=True).lower()
+
+        for kw, label in COEF_KEYWORDS.items():
+            if kw in context and label not in coefficients:
+                coefficients[label] = inp.get("value", "")
+                break
+
+    data["coefficients"] = coefficients
+
+    # ── 5. Produits et prix ────────────────────────────────────────────────────
+    # Table : Produit | Prix (inputs number)
+    produits: list[dict] = []
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 2:
+            continue
+        nom_prod = cells[0].get_text(strip=True)
+        if not nom_prod or nom_prod.lower() in ["produit", "prix", ""]:
+            continue
+        # Chercher l'input dans la dernière cellule
+        price_inp = cells[-1].find("input")
+        if price_inp:
+            prix_val = price_inp.get("value", "").strip()
+            if prix_val and re.match(r'^\d+', prix_val):
+                produits.append({"produit": nom_prod, "prix_fcfa": int(prix_val)})
+
+    data["produits_prix"] = produits
+
+    # ── 6. Paliers remises par mois ────────────────────────────────────────────
+    paliers: list[dict] = []
+    # Trouver la section PALIERS REMISES
+    palier_header = soup.find(string=re.compile(r"PALIERS\s+REMISES", re.IGNORECASE))
+    if palier_header:
+        table = palier_header.find_next("table")
+        if table:
+            for row in table.find_all("tr"):
+                inputs = row.find_all("input")
+                cells  = row.find_all(["td", "th"])
+                # Format attendu : N | Min | Max | %Remise
+                # Avec inputs pour Min/Max/%, et texte ou badge pour N
+                if len(inputs) >= 2:
+                    vals = [inp.get("value", "").strip() for inp in inputs]
+                    # Numéro de palier = 1er td sans input
+                    numero = cells[0].get_text(strip=True) if cells else str(len(paliers)+1)
+                    paliers.append({
+                        "palier": numero,
+                        "min": vals[0] if len(vals) > 0 else "",
+                        "max": vals[1] if len(vals) > 1 else "",
+                        "remise_pct": vals[2] if len(vals) > 2 else "",
+                    })
+
+    data["paliers_remises"] = paliers
+
+    # ── 7. Paramétrage 2ème et 3ème paire ─────────────────────────────────────
+    paire_header = soup.find(
+        string=re.compile(r"2.me\s+et\s+3.me\s+paire", re.IGNORECASE)
+    )
+    paire_data: dict = {}
+    if paire_header:
+        table = paire_header.find_next("table")
+        if table:
+            rows = table.find_all("tr")
+            for row in rows:
+                cells = row.find_all(["td", "th"])
+                if not cells:
+                    continue
+                label = cells[0].get_text(strip=True)
+                if not label:
+                    continue
+                # Valeurs depuis les inputs ou le texte
+                vals = []
+                for cell in cells[1:]:
+                    inp = cell.find("input")
+                    vals.append(inp.get("value", "").strip() if inp else cell.get_text(strip=True))
+                if vals:
+                    paire_data[label] = {
+                        "2eme_paire": vals[0] if len(vals) > 0 else "",
+                        "3eme_paire": vals[1] if len(vals) > 1 else "",
+                    }
+
+    data["paire_23"] = paire_data
+
+    return data
+
+
+def _formater_opticien_md(d: dict) -> str:
+    """Convertit les données d'un opticien en bloc Markdown lisible."""
+    lignes = [f"## {d.get('nom', 'Inconnu')}"]
+
+    # Détail
+    det = d.get("detail", {})
+    if det:
+        for k, v in det.items():
+            if v:
+                lignes.append(f"- **{k}** : {v}")
+
+    # Pactoïe / 2-3ème paire
+    if d.get("pactoie"):
+        lignes.append(f"- Pactoïe activée : {d['pactoie']}")
+    if d.get("paire_23_active"):
+        lignes.append(f"- 2ème/3ème paire : {d['paire_23_active']}")
+
+    # Coefficients
+    coefs = d.get("coefficients", {})
+    if coefs:
+        coef_str = " | ".join(f"{k}: {v}" for k, v in coefs.items() if v)
+        if coef_str:
+            lignes.append(f"\n**Coefficients** : {coef_str}")
+
+    # Produits et prix
+    produits = d.get("produits_prix", [])
+    if produits:
+        lignes.append("\n**Prix produits (FCFA)** :")
+        for p in produits:
+            prix_fmt = f"{p['prix_fcfa']:,}".replace(",", " ")
+            lignes.append(f"  - {p['produit']} : **{prix_fmt} FCFA**")
+
+    # Paliers remises
+    paliers = d.get("paliers_remises", [])
+    if paliers:
+        lignes.append("\n**Paliers remises mensuelles** :")
+        for p in paliers:
+            if p.get("min") and p.get("max") and p.get("remise_pct"):
+                lignes.append(
+                    f"  - {p['min']} à {p['max']} ordonnances/mois → **{p['remise_pct']}% remise**"
+                )
+
+    # 2ème / 3ème paire
+    p23 = d.get("paire_23", {})
+    if p23:
+        lignes.append("\n**Paramétrage 2ème / 3ème paire** :")
+        for label, vals in p23.items():
+            v2 = vals.get("2eme_paire", "")
+            v3 = vals.get("3eme_paire", "")
+            if v2 or v3:
+                lignes.append(f"  - {label} : 2ème={v2} | 3ème={v3}")
+
+    lignes.append("")
+    return "\n".join(lignes)
+
+
 async def scraper_prix_opticiens(limite: int = 0) -> dict:
     """
     Récupère les prix personnalisés pour chaque opticien du réseau SAMANTAN.
@@ -921,17 +1135,18 @@ async def scraper_prix_opticiens(limite: int = 0) -> dict:
                         if len(l.strip()) > 3
                     ][:60]
 
-                resultats.append({
-                    "nom": opticien["nom"],
-                    "id": opticien["id"],
-                    "url": url_prix,
-                    "prix": prix_produits,
-                    "page_chars": len(r.text),
-                    "erreur": None,
-                })
+                parsed = _parser_page_prix_opticien(r.text, nom_opticien=opticien["nom"])
+                parsed["id"]        = opticien["id"]
+                parsed["url"]       = url_prix
+                parsed["erreur"]    = None
+                parsed["page_chars"] = len(r.text)
+                resultats.append(parsed)
+
+                nb_produits = len(parsed.get("produits_prix", []))
+                nb_paliers  = len(parsed.get("paliers_remises", []))
                 logger.info(
                     f"  [{i+1}/{len(opticiens)}] ✓ {opticien['nom']} "
-                    f"({len(prix_produits)} entrées, {len(r.text)} chars)"
+                    f"({nb_produits} produits, {nb_paliers} paliers)"
                 )
 
                 await asyncio.sleep(0.4)  # politesse envers samantan.net
@@ -940,7 +1155,7 @@ async def scraper_prix_opticiens(limite: int = 0) -> dict:
                 logger.warning(f"  [{i+1}] Erreur {opticien['nom']} : {e}")
                 resultats.append({
                     "nom": opticien["nom"], "id": opticien["id"],
-                    "erreur": str(e), "prix": [],
+                    "erreur": str(e), "produits_prix": [], "paliers_remises": [],
                 })
 
     # ── Construire et sauvegarder knowledge/prix_opticiens.md ─────────────────
@@ -952,23 +1167,17 @@ async def scraper_prix_opticiens(limite: int = 0) -> dict:
         f"_Source : {SAMANTAN_URL}/opticiens/prix-personaliser/{{id}}_",
         f"_Total opticiens : {len(resultats)}_",
         "",
+        "---",
+        "",
     ]
 
     for r in resultats:
-        lignes_md.append(f"## {r['nom']} (ID: {r['id']})")
         if r.get("erreur"):
-            lignes_md.append(f"- Erreur : {r['erreur']}")
-        elif r.get("prix"):
-            for p in r["prix"]:
-                if isinstance(p, dict):
-                    lignes_md.append(
-                        "  • " + " | ".join(f"{k}: {v}" for k, v in p.items())
-                    )
-                else:
-                    lignes_md.append(f"  • {p}")
+            lignes_md.append(f"## {r['nom']} (ID: {r['id']})")
+            lignes_md.append(f"- ⚠️ Erreur : {r['erreur']}")
+            lignes_md.append("")
         else:
-            lignes_md.append("  _(aucun prix trouvé)_")
-        lignes_md.append("")
+            lignes_md.append(_formater_opticien_md(r))
 
     knowledge_dir = KNOWLEDGE_FILE.parent
     knowledge_dir.mkdir(parents=True, exist_ok=True)
