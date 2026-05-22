@@ -33,6 +33,24 @@ TOOLS = [
         }
     },
     {
+        "name": "consulter_prix_opticien",
+        "description": (
+            "Consulte les prix personnalisés d'un opticien spécifique : tarifs par produit, "
+            "paliers de remise mensuels, paramétrage 2ème/3ème paire, pactoïe. "
+            "Utiliser quand un opticien demande ses prix, ses remises ou ses avantages."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nom_opticien": {
+                    "type": "string",
+                    "description": "Nom de l'opticien ou de la boutique (ex: 'OPTIQUE PONTY', 'JUNIOR OPTIQUE')"
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "consulter_ordonnances_samantan",
         "description": (
             "Accède à la liste des ordonnances/commandes du site SAMANTAN en temps réel. "
@@ -65,24 +83,59 @@ def cargar_config_prompts() -> dict:
 
 
 def cargar_knowledge() -> str:
-    """Charge les fichiers de knowledge/ pour enrichir le contexte de Tima."""
+    """
+    Charge les fichiers de knowledge/ dans le system prompt de Tima.
+
+    Règles de taille pour garder le contexte Claude sous contrôle :
+      - prix_opticiens.md  → EXCLU du system prompt (trop grand, ~125 KB)
+                             accessible uniquement via l'outil consulter_prix_opticien
+      - catalogue_samantan.md → limité à 12 000 chars (résumé des produits actifs)
+      - Autres fichiers    → limités à 8 000 chars chacun
+      - Total knowledge    → plafonné à 30 000 chars
+    """
     knowledge_dir = Path("knowledge")
     contenus = []
+    total_chars = 0
+    LIMITE_TOTALE = 30_000
+
+    # Fichiers exclus du system prompt (trop grands, gérés par outils)
+    EXCLUS = {"prix_opticiens.md"}
+
+    # Limites par fichier
+    LIMITES = {
+        "catalogue_samantan.md": 12_000,
+    }
+    LIMITE_DEFAUT = 8_000
 
     if not knowledge_dir.exists():
         return ""
 
     for fichier in sorted(knowledge_dir.glob("*.md")):
-        if fichier.name.startswith("."):
+        if fichier.name.startswith(".") or fichier.name in EXCLUS:
+            if fichier.name in EXCLUS:
+                logger.info(f"Knowledge exclu (outil dédié) : {fichier.name}")
             continue
+
+        if total_chars >= LIMITE_TOTALE:
+            logger.info(f"Limite knowledge atteinte ({LIMITE_TOTALE} chars) — {fichier.name} ignoré")
+            break
+
         try:
             texte = fichier.read_text(encoding="utf-8").strip()
-            if texte and len(texte) > 50:
-                contenus.append(f"\n\n---\n{texte}")
-                logger.info(f"Knowledge chargé : {fichier.name} ({len(texte)} caractères)")
+            if not texte or len(texte) < 50:
+                continue
+
+            limite = LIMITES.get(fichier.name, LIMITE_DEFAUT)
+            if len(texte) > limite:
+                texte = texte[:limite] + f"\n\n_(... tronqué à {limite} chars)_"
+
+            contenus.append(f"\n\n---\n{texte}")
+            total_chars += len(texte)
+            logger.info(f"Knowledge chargé : {fichier.name} ({len(texte)} chars)")
         except Exception as e:
             logger.warning(f"Impossible de lire {fichier} : {e}")
 
+    logger.info(f"Knowledge total : {total_chars} chars / {LIMITE_TOTALE} max")
     return "\n".join(contenus)
 
 
@@ -128,11 +181,17 @@ def _extraire_texte(content: list) -> str:
 
 async def _executer_outil(nom: str, parametres: dict) -> str:
     """Exécute un outil demandé par Claude et retourne le résultat."""
+
     if nom == "consulter_catalogue_samantan":
         from agent.web_scraper import fetch_catalogue_samantan
         recherche = parametres.get("recherche", "")
         logger.info(f"Tima consulte le catalogue SAMANTAN (recherche: '{recherche}')")
         return await fetch_catalogue_samantan(recherche)
+
+    if nom == "consulter_prix_opticien":
+        nom_opticien = parametres.get("nom_opticien", "").strip()
+        logger.info(f"Tima consulte les prix de : '{nom_opticien}'")
+        return _chercher_prix_opticien(nom_opticien)
 
     if nom == "consulter_ordonnances_samantan":
         from agent.web_scraper import fetch_ordonnances_samantan
@@ -141,6 +200,42 @@ async def _executer_outil(nom: str, parametres: dict) -> str:
         return await fetch_ordonnances_samantan(recherche)
 
     return "Outil inconnu."
+
+
+def _chercher_prix_opticien(nom_opticien: str) -> str:
+    """
+    Recherche les prix d'un opticien dans knowledge/prix_opticiens.md.
+    Retourne la section correspondante ou les 5 premiers opticiens si nom vide.
+    """
+    try:
+        fichier = Path("knowledge/prix_opticiens.md")
+        if not fichier.exists():
+            return "Fichier de prix non disponible — relance /scraper-prix-opticiens."
+
+        contenu = fichier.read_text(encoding="utf-8")
+        sections = contenu.split("\n## ")
+
+        if not nom_opticien:
+            # Retourner les 3 premiers opticiens comme exemple
+            exemples = sections[1:4] if len(sections) > 1 else []
+            return "Exemples de prix :\n\n## " + "\n\n## ".join(exemples) if exemples else contenu[:3000]
+
+        # Recherche partielle insensible à la casse
+        nom_lower = nom_opticien.lower()
+        for section in sections[1:]:
+            titre = section.split("\n")[0].lower()
+            if nom_lower in titre:
+                return "## " + section[:4000]
+
+        # Pas trouvé → proposer les noms disponibles
+        noms = [s.split("\n")[0] for s in sections[1:] if s.strip()][:20]
+        return (
+            f"Opticien '{nom_opticien}' non trouvé.\n"
+            f"Opticiens disponibles : {', '.join(noms)}"
+        )
+    except Exception as e:
+        logger.warning(f"Erreur lecture prix opticiens : {e}")
+        return "Impossible de lire les prix pour l'instant."
 
 
 async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
