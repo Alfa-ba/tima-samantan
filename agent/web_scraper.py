@@ -571,18 +571,39 @@ async def fetch_catalogue_samantan(recherche: str = "") -> str:
 
 async def prechauffer_catalogue() -> None:
     """
-    Préchauffer le cache catalogue au démarrage.
-    Appeler en tâche de fond dans le lifespan FastAPI.
+    Préchauffer le cache catalogue au démarrage ET mémoriser dans knowledge/.
+    Le fichier knowledge/catalogue_samantan.md est intégré automatiquement
+    dans le system prompt de Tima à chaque requête.
     """
     global _catalogue_cache
     logger.info("Préchauffage cache catalogue SAMANTAN...")
     try:
         data = await _fetch_catalogue_raw()
-        if data and len(data) > 50:
+        if data and len(data) > 100:
+            # ── Cache mémoire ──────────────────────────────────────────────────
             _catalogue_cache["data"] = data
             _catalogue_cache["ts"] = time.monotonic()
             logger.info(f"Cache catalogue préchauffé ✓ ({len(data)} chars)")
+
+            # ── Mémorisation permanente dans knowledge/ ────────────────────────
+            # brain.py charge automatiquement tous les fichiers .md de knowledge/
+            # dans le system prompt → Tima connaît le catalogue sans appeler le tool
+            from datetime import datetime
+            knowledge_dir = KNOWLEDGE_FILE.parent
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            catalogue_file = knowledge_dir / "catalogue_samantan.md"
+            catalogue_file.write_text(
+                f"# Catalogue SAMANTAN — Produits actifs\n"
+                f"_Mis à jour : {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n\n"
+                f"{data}",
+                encoding="utf-8"
+            )
+            logger.info(f"Catalogue mémorisé dans {catalogue_file} ✓")
         else:
-            logger.warning("Préchauffage catalogue : résultat vide ou invalide")
+            logger.warning(
+                f"Préchauffage catalogue : résultat trop court "
+                f"({len(data) if data else 0} chars) — "
+                f"vérifier SAMANTAN_LOGIN_EMAIL et SAMANTAN_LOGIN_PASSWORD sur Railway"
+            )
     except Exception as e:
         logger.warning(f"Préchauffage catalogue échoué : {e} — Tima fonctionne normalement")

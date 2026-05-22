@@ -173,8 +173,10 @@ system_prompt: |
   - Toujours une question à la fois
   - Si le client hésite, rappelle la qualité FreeForm et la livraison partout
   - Confirme les détails avant de valider une commande
-  - CATALOGUE : Ne présente JAMAIS un produit qui n'est pas actif/disponible sur le site.
-    Consulte toujours le catalogue en temps réel et ne montre que les produits actifs.
+  - CATALOGUE : Tu as accès au catalogue SAMANTAN dans ton contexte (section "Catalogue SAMANTAN").
+    Utilise ces données pour répondre aux questions produits.
+    Si le client demande une info très spécifique ou en temps réel (ex: stock, prix exact),
+    utilise l'outil consulter_catalogue_samantan pour vérifier.
 
 fallback_message: "Désolée, j'ai pas bien saisi. Tu peux reformuler ? Je suis là pour t'aider."
 error_message: "Ah désolée, petit souci technique de mon côté. Réessaie dans quelques instants ou appelle-nous au +221 77 543 43 16."
