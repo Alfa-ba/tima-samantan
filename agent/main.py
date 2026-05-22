@@ -86,6 +86,71 @@ async def health_check():
     return {"status": "ok", "agent": "Tima", "business": "SAMANTAN"}
 
 
+@app.get("/test-login")
+async def test_login():
+    """Diagnostique pas-à-pas la connexion à samantan.net."""
+    import httpx, os, time
+    SAMANTAN_URL = os.getenv("SAMANTAN_SITE_URL", "https://samantan.net")
+    email = os.getenv("SAMANTAN_LOGIN_EMAIL", "NON_DEFINI")
+    pwd = os.getenv("SAMANTAN_LOGIN_PASSWORD", "NON_DEFINI")
+    cat_url = (
+        f"{SAMANTAN_URL}/liste-detaillee-des-produits"
+        "?laboratoire_id=all&traitement=all&statut=1&stock=0"
+    )
+    result = {
+        "credentials": {
+            "email": email,
+            "password_length": len(pwd),
+            "password_ok": pwd not in ("NON_DEFINI", "5M4BIY7", ""),
+        },
+        "steps": {}
+    }
+    try:
+        t0 = time.monotonic()
+        async with httpx.AsyncClient(follow_redirects=False, timeout=20.0) as c:
+            # Étape 1 — GET page login
+            r1 = await c.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+            result["steps"]["1_get_login"] = {"status": r1.status_code, "ms": int((time.monotonic()-t0)*1000)}
+
+            # Étape 2 — POST login
+            t1 = time.monotonic()
+            r2 = await c.post(
+                f"{SAMANTAN_URL}/connexion-samantan",
+                data={
+                    "_method": "POST",
+                    "data[User][email]": email,
+                    "data[User][password]": pwd,
+                },
+                timeout=15.0
+            )
+            location = r2.headers.get("location", "")
+            login_ok = r2.status_code == 302 and "connexion" not in location
+            result["steps"]["2_post_login"] = {
+                "status": r2.status_code,
+                "location": location,
+                "login_success": login_ok,
+                "cookies": list(c.cookies.keys()),
+                "ms": int((time.monotonic()-t1)*1000)
+            }
+
+            # Étape 3 — GET catalogue (seulement si login ok)
+            if login_ok:
+                t2 = time.monotonic()
+                r3 = await c.get(cat_url, follow_redirects=True, timeout=25.0)
+                result["steps"]["3_get_catalogue"] = {
+                    "status": r3.status_code,
+                    "final_url": str(r3.url),
+                    "content_chars": len(r3.text),
+                    "redirected_to_login": "connexion" in str(r3.url),
+                    "ms": int((time.monotonic()-t2)*1000)
+                }
+            else:
+                result["steps"]["3_get_catalogue"] = "skipped — login failed"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
 @app.get("/debug")
 async def debug():
     """État interne du serveur — utile pour diagnostiquer en production."""
