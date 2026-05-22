@@ -276,6 +276,203 @@ async def debug():
     }
 
 
+@app.get("/scraper-prix-opticiens")
+async def scraper_prix_opticiens_endpoint(limite: int = 0):
+    """
+    Scrape les prix personnalisés de chaque opticien depuis :
+      samantan.net/opticiens/prix-personaliser/{opticien_id}
+
+    Paramètre optionnel : ?limite=10 pour tester sur 10 opticiens d'abord.
+    Sans paramètre → traite les 145 opticiens complets (~3 min).
+
+    Sauvegarde knowledge/prix_opticiens.md chargé automatiquement par Tima.
+    """
+    from agent.web_scraper import scraper_prix_opticiens
+    try:
+        resultat = await scraper_prix_opticiens(limite=limite)
+        return resultat
+    except Exception as e:
+        logger.error(f"Erreur scraper_prix_opticiens : {e}")
+        return {"erreur": str(e)}
+
+
+@app.get("/extraire-prix-js")
+async def extraire_prix_js():
+    """
+    Parse la page /nouvelle-ordonnance (7 MB) pour extraire les données de prix
+    embarquées dans les scripts JavaScript — sans soumettre aucun formulaire.
+    Sauvegarde le résultat dans knowledge/prix_opticiens.md
+    """
+    import httpx, json, re as re2
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+
+    SAMANTAN_URL_D = os.getenv("SAMANTAN_SITE_URL", "https://samantan.net")
+    email = os.getenv("SAMANTAN_LOGIN_EMAIL")
+    pwd   = os.getenv("SAMANTAN_LOGIN_PASSWORD")
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=60.0) as c:
+        # Login
+        await c.get(f"{SAMANTAN_URL_D}/connexion-samantan", timeout=10.0)
+        r_l = await c.post(
+            f"{SAMANTAN_URL_D}/connexion-samantan",
+            data={"_method": "POST",
+                  "data[User][email]": email,
+                  "data[User][password]": pwd},
+            timeout=15.0,
+        )
+        if r_l.status_code != 302:
+            return {"erreur": f"Login échoué : {r_l.status_code}"}
+
+        # GET la page du formulaire (7 MB)
+        r_form = await c.get(
+            f"{SAMANTAN_URL_D}/nouvelle-ordonnance",
+            follow_redirects=True, timeout=50.0
+        )
+        html = r_form.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # ── 1. Chercher tous les blocs JSON dans les scripts ───────────────────
+        json_trouves = []
+        for script in soup.find_all("script"):
+            txt = script.get_text()
+            if not txt.strip():
+                continue
+            kws = ["prix", "price", "tarif", "produit", "opticien",
+                   "montant", "total", "amount", "catalogue"]
+            if not any(kw in txt.lower() for kw in kws):
+                continue
+
+            # Chercher des tableaux/objets JSON assignés à des variables
+            # Patterns : var X = {...}  /  var X = [...]  /  const X = ...
+            for pat in [
+                r'(?:var|let|const)\s+(\w+)\s*=\s*(\{[\s\S]{20,5000}\})',
+                r'(?:var|let|const)\s+(\w+)\s*=\s*(\[[\s\S]{20,5000}\])',
+            ]:
+                for m in re2.finditer(pat, txt):
+                    varname = m.group(1)
+                    raw     = m.group(2)
+                    try:
+                        obj = json.loads(raw)
+                        json_trouves.append({
+                            "variable": varname,
+                            "type": type(obj).__name__,
+                            "taille": len(obj) if isinstance(obj, (dict, list)) else None,
+                            "apercu": str(obj)[:500],
+                        })
+                    except Exception:
+                        # Pas du JSON valide, garder le texte brut
+                        json_trouves.append({
+                            "variable": varname,
+                            "type": "string_raw",
+                            "apercu": raw[:300],
+                        })
+
+        # ── 2. Chercher des balises <script> contenant des objets de prix ──────
+        # Patterns alternatifs : window.X = ... / app.X = ...
+        for pat in [
+            r'window\.(\w+)\s*=\s*(\{[\s\S]{20,5000}\})',
+            r'window\.(\w+)\s*=\s*(\[[\s\S]{20,5000}\])',
+            r'app\.(\w+)\s*=\s*(\{[\s\S]{20,5000}\})',
+        ]:
+            for m in re2.finditer(pat, html):
+                varname = m.group(1)
+                raw = m.group(2)
+                try:
+                    obj = json.loads(raw)
+                    json_trouves.append({
+                        "variable": f"window.{varname}",
+                        "type": type(obj).__name__,
+                        "taille": len(obj) if isinstance(obj, (dict, list)) else None,
+                        "apercu": str(obj)[:500],
+                    })
+                except Exception:
+                    pass
+
+        # ── 3. Chercher les data-* HTML contenant des prix ────────────────────
+        data_attrs = []
+        for el in soup.find_all(True):
+            for attr, val in el.attrs.items():
+                if not attr.startswith("data-"):
+                    continue
+                if not isinstance(val, str):
+                    continue
+                if any(kw in attr.lower() for kw in ["prix", "price", "tarif", "amount"]):
+                    data_attrs.append({"attr": attr, "val": val[:200], "tag": el.name})
+                elif re2.search(r'\d{3,}', val) and any(
+                    kw in attr.lower() for kw in ["produit", "product", "id", "cost"]
+                ):
+                    data_attrs.append({"attr": attr, "val": val[:200], "tag": el.name})
+
+        # ── 4. Chercher des tableaux HTML de prix ─────────────────────────────
+        tables_prix = []
+        for table in soup.find_all("table"):
+            headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+            if not any(kw in " ".join(headers) for kw in [
+                "prix", "price", "montant", "tarif", "fcfa", "total"
+            ]):
+                continue
+            rows = []
+            for tr in table.find_all("tr")[:20]:
+                cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                if cells:
+                    rows.append(cells)
+            if rows:
+                tables_prix.append({"headers": headers, "rows": rows})
+
+        # ── 5. Texte brut contenant des montants FCFA ─────────────────────────
+        fcfa_matches = re2.findall(
+            r'[\d\s]{3,}(?:FCFA|F\.CFA|CFA)',
+            html, re2.IGNORECASE
+        )
+        fcfa_uniques = list(dict.fromkeys(f.strip() for f in fcfa_matches))[:50]
+
+        # ── 6. Sauvegarder ce qu'on a trouvé ─────────────────────────────────
+        lignes_md = [
+            "# Prix par opticien — SAMANTAN (extraction JS)",
+            f"_Extrait le {datetime.now().strftime('%Y-%m-%d %H:%M')}_",
+            f"_Page formulaire : {len(html)} chars_",
+            "",
+            "## Variables JavaScript trouvées",
+        ]
+        if json_trouves:
+            for j in json_trouves[:20]:
+                lignes_md.append(
+                    f"- `{j['variable']}` ({j['type']}"
+                    + (f", {j['taille']} éléments" if j.get("taille") else "")
+                    + f") : {j['apercu'][:200]}"
+                )
+        else:
+            lignes_md.append("_Aucune variable JSON trouvée_")
+
+        if tables_prix:
+            lignes_md.append("\n## Tableaux de prix HTML")
+            for t in tables_prix:
+                lignes_md.append(f"Headers : {t['headers']}")
+                for row in t["rows"][:10]:
+                    lignes_md.append(f"  • {' | '.join(row)}")
+
+        if fcfa_uniques:
+            lignes_md.append("\n## Montants FCFA trouvés dans la page")
+            for f in fcfa_uniques:
+                lignes_md.append(f"  • {f}")
+
+        from pathlib import Path
+        kdir = Path("knowledge")
+        kdir.mkdir(exist_ok=True)
+        (kdir / "prix_opticiens.md").write_text("\n".join(lignes_md), encoding="utf-8")
+
+        return {
+            "page_chars": len(html),
+            "scripts_avec_prix": len(json_trouves),
+            "json_variables": json_trouves[:30],
+            "data_attrs_prix": data_attrs[:20],
+            "tables_html_prix": tables_prix[:5],
+            "montants_fcfa": fcfa_uniques[:30],
+            "fichier_sauvegarde": "knowledge/prix_opticiens.md",
+        }
+
+
 @app.get("/debug-post-formulaire")
 async def debug_post_formulaire():
     """

@@ -800,7 +800,190 @@ async def fetch_ordonnances_samantan(recherche: str = "") -> str:
     return data
 
 
-# ── Simulation de prix par opticien ───────────────────────────────────────────
+# ── Prix personnalisés par opticien ───────────────────────────────────────────
+
+async def scraper_prix_opticiens(limite: int = 0) -> dict:
+    """
+    Récupère les prix personnalisés pour chaque opticien du réseau SAMANTAN.
+    URL directe : /opticiens/prix-personaliser/{opticien_id}
+
+    Workflow :
+      1. Login une seule fois
+      2. GET /nouvelle-ordonnance → extraire les 145 opticiens (id + nom)
+      3. Pour chaque opticien → GET /opticiens/prix-personaliser/{id}
+      4. Parser le tableau de prix de la page
+      5. Sauvegarder knowledge/prix_opticiens.md
+
+    Args:
+        limite: Nombre max d'opticiens à traiter (0 = tous)
+
+    Returns:
+        dict avec résultats + chemin fichier sauvegardé
+    """
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+
+    resultats = []
+
+    async with httpx.AsyncClient(
+        follow_redirects=False, timeout=30.0, headers=HEADERS
+    ) as client:
+
+        # ── Login ──────────────────────────────────────────────────────────────
+        await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+        r_login = await client.post(
+            f"{SAMANTAN_URL}/connexion-samantan",
+            data={
+                "_method": "POST",
+                "data[User][email]": LOGIN_EMAIL,
+                "data[User][password]": LOGIN_PASSWORD,
+            },
+            timeout=15.0,
+        )
+        if r_login.status_code not in [200, 302]:
+            return {"erreur": f"Login échoué : {r_login.status_code}", "resultats": []}
+        logger.info("scraper_prix_opticiens : login OK")
+
+        # ── Extraire la liste des opticiens depuis le formulaire ───────────────
+        r_form = await client.get(
+            f"{SAMANTAN_URL}/nouvelle-ordonnance",
+            follow_redirects=True,
+            timeout=40.0,
+        )
+        soup_form = BeautifulSoup(r_form.text, "html.parser")
+
+        opticiens: list[dict] = []
+        for sel_el in soup_form.find_all("select"):
+            name = sel_el.get("name", "")
+            if "opticien" not in name.lower() and "opticien_id" not in name.lower():
+                continue
+            for opt in sel_el.find_all("option"):
+                val = opt.get("value", "").strip()
+                label = opt.get_text(strip=True)
+                if val and val != "--":
+                    opticiens.append({"id": val, "nom": label})
+            if opticiens:
+                break
+
+        if not opticiens:
+            return {
+                "erreur": "Liste opticiens introuvable dans /nouvelle-ordonnance",
+                "resultats": [],
+            }
+
+        if limite and limite > 0:
+            opticiens = opticiens[:limite]
+
+        logger.info(f"scraper_prix_opticiens : {len(opticiens)} opticiens à traiter")
+
+        # ── Scraper /opticiens/prix-personaliser/{id} pour chaque opticien ─────
+        for i, opticien in enumerate(opticiens):
+            url_prix = f"{SAMANTAN_URL}/opticiens/prix-personaliser/{opticien['id']}"
+            try:
+                r = await client.get(url_prix, follow_redirects=True, timeout=20.0)
+
+                if r.status_code != 200 or "connexion" in str(r.url):
+                    logger.warning(
+                        f"  [{i+1}/{len(opticiens)}] {opticien['nom']} : "
+                        f"HTTP {r.status_code} | {r.url}"
+                    )
+                    resultats.append({
+                        "nom": opticien["nom"], "id": opticien["id"],
+                        "erreur": f"HTTP {r.status_code}", "prix": [],
+                    })
+                    continue
+
+                soup_prix = BeautifulSoup(r.text, "html.parser")
+
+                # ── Parser les tableaux de prix ────────────────────────────────
+                prix_produits: list[dict | str] = []
+
+                for table in soup_prix.find_all("table"):
+                    entetes = [th.get_text(strip=True) for th in table.find_all("th")]
+                    for row in table.find_all("tr"):
+                        cells = [td.get_text(strip=True) for td in row.find_all("td")]
+                        cells = [c for c in cells if c]
+                        if not cells:
+                            continue
+                        if entetes and len(entetes) == len(cells):
+                            prix_produits.append(dict(zip(entetes, cells)))
+                        elif cells:
+                            prix_produits.append(" | ".join(cells))
+
+                # ── Fallback : texte général ───────────────────────────────────
+                if not prix_produits:
+                    for tag in soup_prix(["script", "style", "nav",
+                                          "header", "footer", "img", "svg"]):
+                        tag.decompose()
+                    texte = soup_prix.get_text(separator="\n", strip=True)
+                    prix_produits = [
+                        l.strip() for l in texte.split("\n")
+                        if len(l.strip()) > 3
+                    ][:60]
+
+                resultats.append({
+                    "nom": opticien["nom"],
+                    "id": opticien["id"],
+                    "url": url_prix,
+                    "prix": prix_produits,
+                    "page_chars": len(r.text),
+                    "erreur": None,
+                })
+                logger.info(
+                    f"  [{i+1}/{len(opticiens)}] ✓ {opticien['nom']} "
+                    f"({len(prix_produits)} entrées, {len(r.text)} chars)"
+                )
+
+                await asyncio.sleep(0.4)  # politesse envers samantan.net
+
+            except Exception as e:
+                logger.warning(f"  [{i+1}] Erreur {opticien['nom']} : {e}")
+                resultats.append({
+                    "nom": opticien["nom"], "id": opticien["id"],
+                    "erreur": str(e), "prix": [],
+                })
+
+    # ── Construire et sauvegarder knowledge/prix_opticiens.md ─────────────────
+    from datetime import datetime
+
+    lignes_md = [
+        "# Prix personnalisés par opticien — SAMANTAN",
+        f"_Extrait le {datetime.now().strftime('%Y-%m-%d %H:%M')}_",
+        f"_Source : {SAMANTAN_URL}/opticiens/prix-personaliser/{{id}}_",
+        f"_Total opticiens : {len(resultats)}_",
+        "",
+    ]
+
+    for r in resultats:
+        lignes_md.append(f"## {r['nom']} (ID: {r['id']})")
+        if r.get("erreur"):
+            lignes_md.append(f"- Erreur : {r['erreur']}")
+        elif r.get("prix"):
+            for p in r["prix"]:
+                if isinstance(p, dict):
+                    lignes_md.append(
+                        "  • " + " | ".join(f"{k}: {v}" for k, v in p.items())
+                    )
+                else:
+                    lignes_md.append(f"  • {p}")
+        else:
+            lignes_md.append("  _(aucun prix trouvé)_")
+        lignes_md.append("")
+
+    knowledge_dir = KNOWLEDGE_FILE.parent
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    prix_file = knowledge_dir / "prix_opticiens.md"
+    prix_file.write_text("\n".join(lignes_md), encoding="utf-8")
+    logger.info(f"Prix opticiens sauvegardés → {prix_file} ✓ ({len(resultats)} opticiens)")
+
+    return {
+        "opticiens_traites": len(resultats),
+        "resultats": resultats,
+        "fichier_sauvegarde": "knowledge/prix_opticiens.md",
+    }
+
+
+# ── Simulation de prix par opticien (ancienne méthode via formulaire) ──────────
 
 async def simuler_prix_par_opticien() -> dict:
     """
