@@ -19,7 +19,7 @@ KNOWLEDGE_FILE = Path("knowledge/samantan_web.md")
 
 # ── Cache catalogue en mémoire (évite 50s de réseau à chaque message) ─────────
 _catalogue_cache: dict = {"data": None, "ts": 0.0}
-_CACHE_TTL_SECS: float = 30 * 60  # 30 minutes
+_CACHE_TTL_SECS: float = 25 * 60 * 60  # 25h (cycle de refresh = 24h, légère marge)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

@@ -55,6 +55,22 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_scraper_background())
     asyncio.create_task(_prechauffer_catalogue())
 
+    async def _rafraichir_catalogue_24h():
+        """Rafraîchit le catalogue toutes les 24h en arrière-plan."""
+        while True:
+            await asyncio.sleep(24 * 60 * 60)  # attendre 24h
+            logger.info("Rafraîchissement catalogue SAMANTAN (cycle 24h)...")
+            try:
+                from agent.web_scraper import prechauffer_catalogue
+                await asyncio.wait_for(prechauffer_catalogue(), timeout=120.0)
+                logger.info("Catalogue rafraîchi ✓")
+            except asyncio.TimeoutError:
+                logger.warning("Rafraîchissement catalogue timeout — prochain cycle dans 24h")
+            except Exception as e:
+                logger.warning(f"Rafraîchissement catalogue échoué : {e}")
+
+    asyncio.create_task(_rafraichir_catalogue_24h())
+
     yield
 
 
