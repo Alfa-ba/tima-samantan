@@ -98,6 +98,86 @@ async def health_check():
     return {"status": "ok", "agent": "Tima", "business": "SAMANTAN"}
 
 
+@app.get("/inspect-formulaire")
+async def inspect_formulaire():
+    """
+    Analyse le formulaire /nouvelle-ordonnance sans le soumettre.
+    Retourne les champs, sélecteurs d'opticiens, et structure complète.
+    """
+    import httpx, os
+    from bs4 import BeautifulSoup
+
+    SAMANTAN_URL = os.getenv("SAMANTAN_SITE_URL", "https://samantan.net")
+    email = os.getenv("SAMANTAN_LOGIN_EMAIL")
+    pwd = os.getenv("SAMANTAN_LOGIN_PASSWORD")
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=20.0) as c:
+        # Login
+        await c.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+        r = await c.post(
+            f"{SAMANTAN_URL}/connexion-samantan",
+            data={"_method": "POST", "data[User][email]": email, "data[User][password]": pwd},
+            timeout=15.0,
+        )
+        if r.status_code != 302:
+            return {"error": f"Login échoué : {r.status_code}"}
+
+        # GET formulaire
+        r2 = await c.get(f"{SAMANTAN_URL}/nouvelle-ordonnance", follow_redirects=True, timeout=15.0)
+        if "connexion" in str(r2.url):
+            return {"error": "Redirigé vers login — accès refusé"}
+
+        soup = BeautifulSoup(r2.text, "html.parser")
+
+        # Extraire tous les champs
+        champs = {}
+        for form in soup.find_all("form"):
+            action = form.get("action", "")
+            method = form.get("method", "")
+            champs[f"form[action={action}]"] = {"method": method, "fields": {}}
+            for el in form.find_all(["input", "select", "textarea"]):
+                name = el.get("name", "")
+                if not name:
+                    continue
+                if el.name == "select":
+                    options = [
+                        {"value": o.get("value", ""), "label": o.get_text(strip=True)}
+                        for o in el.find_all("option")
+                    ]
+                    champs[f"form[action={action}]"]["fields"][name] = {
+                        "type": "select", "options": options[:30]
+                    }
+                else:
+                    champs[f"form[action={action}]"]["fields"][name] = {
+                        "type": el.get("type", "text"),
+                        "value": el.get("value", ""),
+                    }
+
+        # Chercher sélecteur opticien
+        opticiens = []
+        for sel in soup.find_all("select"):
+            opts = sel.find_all("option")
+            if len(opts) > 3 and any(
+                kw in (sel.get("name", "") + " ".join(o.get_text() for o in opts)).lower()
+                for kw in ["opticien", "client", "user", "pharmacie", "boutique"]
+            ):
+                opticiens.append({
+                    "select_name": sel.get("name"),
+                    "options": [{"value": o.get("value"), "label": o.get_text(strip=True)} for o in opts]
+                })
+
+        return {
+            "url_finale": str(r2.url),
+            "page_chars": len(r2.text),
+            "formulaires": champs,
+            "selecteurs_opticiens_detectes": opticiens,
+            "tous_les_selects": [
+                {"name": s.get("name"), "options_count": len(s.find_all("option"))}
+                for s in soup.find_all("select")
+            ]
+        }
+
+
 @app.get("/test-login")
 async def test_login():
     """Diagnostique pas-à-pas la connexion à samantan.net."""
