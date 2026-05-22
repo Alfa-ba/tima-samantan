@@ -97,6 +97,44 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_scraper_prix_background())
 
+    async def _rafraichir_prix_2h_quotidien():
+        """
+        Rafraîchit les prix de tous les opticiens tous les jours à 2h du matin.
+        (Dakar = UTC+0, donc 2h local = 2h UTC sur Railway)
+        Permet de capter les nouveaux clients et changements de tarifs.
+        """
+        from datetime import datetime, timedelta
+
+        while True:
+            # ── Calculer le temps jusqu'au prochain 2h00 ──────────────────────
+            maintenant = datetime.utcnow()
+            prochain_2h = maintenant.replace(hour=2, minute=0, second=0, microsecond=0)
+            if maintenant >= prochain_2h:
+                prochain_2h += timedelta(days=1)
+
+            attente_sec = (prochain_2h - maintenant).total_seconds()
+            h = int(attente_sec // 3600)
+            m = int((attente_sec % 3600) // 60)
+            logger.info(
+                f"Prochain rafraîchissement prix opticiens : "
+                f"{prochain_2h.strftime('%Y-%m-%d %H:%M')} UTC "
+                f"(dans {h}h{m:02d}min)"
+            )
+
+            await asyncio.sleep(attente_sec)
+
+            # ── Rafraîchissement à 2h ──────────────────────────────────────────
+            logger.info("=== Rafraîchissement prix opticiens 2h00 UTC ===")
+            try:
+                await asyncio.wait_for(_run_scraping_prix(limite=0), timeout=600.0)
+                logger.info("Prix opticiens mis à jour ✓ (cycle quotidien 2h)")
+            except asyncio.TimeoutError:
+                logger.warning("Rafraîchissement prix 2h : timeout (10min) — réessai demain")
+            except Exception as e:
+                logger.warning(f"Rafraîchissement prix 2h : {e} — réessai demain")
+
+    asyncio.create_task(_rafraichir_prix_2h_quotidien())
+
     yield
 
 
