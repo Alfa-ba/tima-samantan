@@ -29,8 +29,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"Tima (SAMANTAN) démarrée sur le port {PORT}")
     logger.info(f"Fournisseur WhatsApp : {proveedor.__class__.__name__}")
 
-    # Récupérer le contenu du site SAMANTAN en arrière-plan (sans bloquer le démarrage)
+    # ── Tâches de démarrage en arrière-plan (sans bloquer le démarrage) ─────────
     import asyncio
+
     async def _scraper_background():
         try:
             from agent.web_scraper import scraper_samantan
@@ -42,7 +43,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Scraping SAMANTAN échoué : {e} — Tima fonctionne normalement")
 
+    async def _prechauffer_catalogue():
+        try:
+            from agent.web_scraper import prechauffer_catalogue
+            await asyncio.wait_for(prechauffer_catalogue(), timeout=55.0)
+        except asyncio.TimeoutError:
+            logger.warning("Préchauffage catalogue timeout (55s) — le cache sera rempli au 1er appel")
+        except Exception as e:
+            logger.warning(f"Préchauffage catalogue : {e} — Tima fonctionne normalement")
+
     asyncio.create_task(_scraper_background())
+    asyncio.create_task(_prechauffer_catalogue())
 
     yield
 

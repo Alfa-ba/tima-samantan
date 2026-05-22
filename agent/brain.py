@@ -97,6 +97,17 @@ def obtener_mensaje_fallback() -> str:
     return config.get("fallback_message", "Désolée, je n'ai pas bien compris. Tu peux reformuler ?")
 
 
+def _extraire_texte(content: list) -> str:
+    """
+    Extrait le texte du premier bloc TextBlock dans une liste de blocs Anthropic.
+    Sûr même si le premier bloc est un ToolUseBlock ou si la liste est vide.
+    """
+    for bloc in content:
+        if hasattr(bloc, "type") and bloc.type == "text" and hasattr(bloc, "text"):
+            return bloc.text
+    return ""
+
+
 async def _executer_outil(nom: str, parametres: dict) -> str:
     """Exécute un outil demandé par Claude et retourne le résultat."""
     if nom == "consulter_catalogue_samantan":
@@ -180,12 +191,16 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
                     tools=TOOLS
                 )
 
-                respuesta = response2.content[0].text
+                respuesta = _extraire_texte(response2.content)
+                if not respuesta:
+                    respuesta = obtener_mensaje_error()
                 logger.info(f"Réponse avec catalogue ({response2.usage.output_tokens} tokens)")
                 return respuesta
 
         # ── Réponse directe sans outil ─────────────────────────────────────
-        respuesta = response.content[0].text
+        respuesta = _extraire_texte(response.content)
+        if not respuesta:
+            respuesta = obtener_mensaje_fallback()
         logger.info(f"Réponse directe ({response.usage.input_tokens} in / {response.usage.output_tokens} out)")
         return respuesta
 

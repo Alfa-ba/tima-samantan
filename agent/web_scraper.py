@@ -2,6 +2,8 @@
 
 import os
 import re
+import time
+import asyncio
 import logging
 import httpx
 from pathlib import Path
@@ -14,6 +16,10 @@ SAMANTAN_URL = os.getenv("SAMANTAN_SITE_URL", "https://samantan.net")
 LOGIN_EMAIL = os.getenv("SAMANTAN_LOGIN_EMAIL", "tima@samantan.com")
 LOGIN_PASSWORD = os.getenv("SAMANTAN_LOGIN_PASSWORD", "5M4BIY7")
 KNOWLEDGE_FILE = Path("knowledge/samantan_web.md")
+
+# ── Cache catalogue en mémoire (évite 50s de réseau à chaque message) ─────────
+_catalogue_cache: dict = {"data": None, "ts": 0.0}
+_CACHE_TTL_SECS: float = 30 * 60  # 30 minutes
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -407,17 +413,11 @@ async def _connecter_samantan(client: httpx.AsyncClient) -> bool:
         return False
 
 
-async def fetch_catalogue_samantan(recherche: str = "") -> str:
+async def _fetch_catalogue_raw() -> str:
     """
-    Accède à la liste détaillée des produits ACTIFS de samantan.net en temps réel.
-    URL : /liste-detaillee-des-produits?statut=1
-    Entre dans chaque fiche produit pour récupérer tous les détails.
-
-    Args:
-        recherche: Mot-clé pour filtrer les produits (ex: "progressif", "transitions")
-
-    Returns:
-        Texte avec les fiches détaillées de tous les produits actifs
+    Fetch brut du catalogue SAMANTAN depuis samantan.net.
+    Retourne tous les produits actifs SANS filtre.
+    N'appelle PAS directement — utilise fetch_catalogue_samantan() pour le cache.
     """
     async with httpx.AsyncClient(
         follow_redirects=False,
@@ -470,9 +470,6 @@ async def fetch_catalogue_samantan(recherche: str = "") -> str:
                     traitements = next((l for l in contexte if "HC" in l or "HMC" in l), "")
 
                     if nom:
-                        # Filtrer par recherche si spécifiée
-                        if recherche and recherche.lower() not in nom.lower():
-                            continue
                         produits.append({
                             "ref": ref,
                             "nom": nom,
@@ -498,3 +495,94 @@ async def fetch_catalogue_samantan(recherche: str = "") -> str:
             lignes_resultat.append(ligne_prod)
 
         return "\n".join(lignes_resultat)
+
+
+# ── Wrapper public avec cache ──────────────────────────────────────────────────
+
+async def fetch_catalogue_samantan(recherche: str = "") -> str:
+    """
+    Retourne le catalogue SAMANTAN actif avec cache 30 minutes.
+
+    Ordre de priorité :
+      1. Cache mémoire frais (< 30 min)  → instantané
+      2. Fetch temps réel avec timeout 8s → réseau
+      3. Cache périmé ou message fallback → si fetch échoue
+
+    Args:
+        recherche: Filtre optionnel (ex: 'progressif', 'transitions')
+    """
+    global _catalogue_cache
+    now = time.monotonic()
+
+    # ── 1. Cache frais ─────────────────────────────────────────────────────────
+    if _catalogue_cache["data"] and (now - _catalogue_cache["ts"]) < _CACHE_TTL_SECS:
+        age = int(now - _catalogue_cache["ts"])
+        logger.info(f"Catalogue SAMANTAN depuis cache ({age}s / {int(_CACHE_TTL_SECS)}s TTL)")
+        data = _catalogue_cache["data"]
+
+    else:
+        # ── 2. Fetch temps réel (8s max pour rester dans le timeout webhook Meta) ──
+        logger.info("Fetch catalogue SAMANTAN (cache absent ou expiré)...")
+        try:
+            data = await asyncio.wait_for(_fetch_catalogue_raw(), timeout=8.0)
+            if data and len(data) > 50:
+                _catalogue_cache["data"] = data
+                _catalogue_cache["ts"] = now
+                logger.info(f"Cache catalogue mis à jour ({len(data)} chars)")
+            else:
+                data = (
+                    _catalogue_cache["data"]
+                    or "Catalogue momentanément inaccessible. Consultez www.samantan.net"
+                )
+        except asyncio.TimeoutError:
+            logger.warning("Catalogue fetch timeout (8s) — fallback cache périmé ou message")
+            data = (
+                _catalogue_cache["data"]
+                or "Catalogue momentanément inaccessible. Consultez www.samantan.net"
+            )
+        except Exception as e:
+            logger.error(f"Erreur fetch catalogue : {e}")
+            data = (
+                _catalogue_cache["data"]
+                or "Catalogue momentanément inaccessible. Consultez www.samantan.net"
+            )
+
+    # ── 3. Filtrer par mot-clé si demandé ─────────────────────────────────────
+    if recherche and data and "inaccessible" not in data:
+        lignes = data.split("\n")
+        header = lignes[0] if lignes else ""
+        filtrées = [header]
+        i = 1
+        while i < len(lignes):
+            ligne = lignes[i]
+            if ligne.startswith("•"):
+                if recherche.lower() in ligne.lower():
+                    filtrées.append(ligne)
+                    # Inclure la ligne Traitements qui suit si présente
+                    if i + 1 < len(lignes) and lignes[i + 1].strip().startswith("Traitements"):
+                        filtrées.append(lignes[i + 1])
+                        i += 1
+            i += 1
+        if len(filtrées) > 1:
+            return "\n".join(filtrées)
+
+    return data
+
+
+async def prechauffer_catalogue() -> None:
+    """
+    Préchauffer le cache catalogue au démarrage.
+    Appeler en tâche de fond dans le lifespan FastAPI.
+    """
+    global _catalogue_cache
+    logger.info("Préchauffage cache catalogue SAMANTAN...")
+    try:
+        data = await _fetch_catalogue_raw()
+        if data and len(data) > 50:
+            _catalogue_cache["data"] = data
+            _catalogue_cache["ts"] = time.monotonic()
+            logger.info(f"Cache catalogue préchauffé ✓ ({len(data)} chars)")
+        else:
+            logger.warning("Préchauffage catalogue : résultat vide ou invalide")
+    except Exception as e:
+        logger.warning(f"Préchauffage catalogue échoué : {e} — Tima fonctionne normalement")
