@@ -381,123 +381,124 @@ def _extraire_details_produit(html: str) -> str:
         return ""
 
 
+CATALOGUE_ACTIFS_URL = (
+    f"{SAMANTAN_URL}/liste-detaillee-des-produits"
+    "?laboratoire_id=all&traitement=all&statut=1&stock=0"
+)
+
+
+async def _connecter_samantan(client: httpx.AsyncClient) -> bool:
+    """Se connecte à samantan.net et retourne True si succès."""
+    try:
+        await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+        login_data = {
+            "email": LOGIN_EMAIL,
+            "password": LOGIN_PASSWORD,
+            "log": LOGIN_EMAIL,
+            "pwd": LOGIN_PASSWORD,
+            "username": LOGIN_EMAIL,
+        }
+        r = await client.post(
+            f"{SAMANTAN_URL}/connexion-samantan",
+            data=login_data,
+            timeout=15.0
+        )
+        logger.info(f"Connexion SAMANTAN : status {r.status_code}")
+        return True
+    except Exception as e:
+        logger.warning(f"Connexion SAMANTAN échouée : {e}")
+        return False
+
+
 async def fetch_catalogue_samantan(recherche: str = "") -> str:
     """
-    Accède au menu Catalogue de samantan.net en temps réel et retourne
-    les informations produits. Appelé par Tima quand un client pose
-    une question sur les produits SAMANTAN.
+    Accède à la liste détaillée des produits ACTIFS de samantan.net en temps réel.
+    URL : /liste-detaillee-des-produits?statut=1
+    Entre dans chaque fiche produit pour récupérer tous les détails.
 
     Args:
-        recherche: Mot-clé de recherche produit (ex: "progressif", "transitions")
+        recherche: Mot-clé pour filtrer les produits (ex: "progressif", "transitions")
 
     Returns:
-        Texte avec les informations produits du catalogue
+        Texte avec les fiches détaillées de tous les produits actifs
     """
-    contenu = []
-
-    # URLs catalogue à essayer
-    pages_catalogue = [
-        ("Catalogue", "/catalogue"),
-        ("Produits", "/produits"),
-        ("Boutique", "/boutique"),
-        ("Shop", "/shop"),
-        ("Verres progressifs", "/catalogue/progressifs"),
-        ("Verres Transitions", "/catalogue/transitions"),
-        ("Verres unifocaux", "/catalogue/unifocaux"),
-    ]
-
-    # Si recherche spécifique, ajouter des URLs ciblées
-    if recherche:
-        mot = recherche.lower().replace(" ", "-")
-        pages_catalogue += [
-            (f"Recherche : {recherche}", f"/catalogue/{mot}"),
-            (f"Produit : {recherche}", f"/produits/{mot}"),
-            (f"Catégorie : {recherche}", f"/?s={recherche}"),
-        ]
-
     async with httpx.AsyncClient(
         follow_redirects=True,
-        timeout=25.0,
+        timeout=30.0,
         headers=HEADERS
     ) as client:
 
-        # Connexion d'abord
+        # ── Étape 1 : Connexion ────────────────────────────────────────────
+        await _connecter_samantan(client)
+
+        # ── Étape 2 : Charger la page des produits actifs ──────────────────
         try:
-            await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
-            login_data = {
-                "email": LOGIN_EMAIL,
-                "password": LOGIN_PASSWORD,
-                "log": LOGIN_EMAIL,
-                "pwd": LOGIN_PASSWORD,
-                "username": LOGIN_EMAIL,
-            }
-            await client.post(
-                f"{SAMANTAN_URL}/connexion-samantan",
-                data=login_data,
-                timeout=15.0
-            )
-            logger.info("Connexion SAMANTAN pour catalogue...")
+            r = await client.get(CATALOGUE_ACTIFS_URL, timeout=20.0)
+            if r.status_code != 200:
+                logger.error(f"Page produits actifs inaccessible : {r.status_code}")
+                return "Catalogue momentanément inaccessible. Consulter www.samantan.net"
+            html_catalogue = r.text
+            logger.info(f"Page produits actifs chargée ({len(html_catalogue)} caractères)")
         except Exception as e:
-            logger.warning(f"Connexion catalogue : {e}")
-
-        html_catalogue = ""
-        catalogue_url_utilisee = ""
-
-        # ── Étape 1 : Trouver la page catalogue ────────────────────────────
-        for nom, chemin in pages_catalogue:
-            try:
-                r = await client.get(f"{SAMANTAN_URL}{chemin}", timeout=15.0)
-                if r.status_code == 200 and len(r.text) > 500:
-                    html_catalogue = r.text
-                    catalogue_url_utilisee = chemin
-                    logger.info(f"Page catalogue trouvée : {nom} ({chemin})")
-                    break
-            except Exception as e:
-                logger.debug(f"Page catalogue {chemin} : {e}")
-
-        if not html_catalogue:
+            logger.error(f"Erreur chargement catalogue : {e}")
             return "Catalogue momentanément inaccessible. Consulter www.samantan.net"
 
-        # ── Étape 2 : Extraire les liens vers chaque produit ───────────────
+        # ── Étape 3 : Extraire le contenu de la liste ─────────────────────
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_catalogue, "lxml")
+
+        # Supprimer les éléments inutiles
+        for tag in soup(["script", "style", "meta", "link", "svg",
+                         "img", "noscript", "iframe", "header", "footer", "nav"]):
+            tag.decompose()
+
+        # ── Étape 4 : Chercher les liens vers les fiches produits ──────────
         liens_produits = _extraire_liens_produits(html_catalogue, SAMANTAN_URL)
 
-        # Si aucun lien trouvé, retourner le contenu général du catalogue
-        if not liens_produits:
-            texte_general = _extraire_produits_actifs(html_catalogue)
-            if texte_general:
-                return f"[Catalogue SAMANTAN — produits actifs]\n{texte_general}"
-            return "Catalogue momentanément inaccessible. Consulter www.samantan.net"
+        # Filtrer par recherche si spécifiée
+        if recherche:
+            recherche_lower = recherche.lower()
+            liens_filtrés = [
+                (nom, url) for nom, url in liens_produits
+                if recherche_lower in nom.lower() or recherche_lower in url.lower()
+            ]
+            if liens_filtrés:
+                liens_produits = liens_filtrés
+                logger.info(f"Filtre '{recherche}' : {len(liens_produits)} produits")
 
-        # ── Étape 3 : Entrer dans chaque page produit ─────────────────────
-        fiches_produits = []
-        MAX_PRODUITS = 15  # Limite pour éviter des réponses trop longues
+        # ── Étape 5 : Si pas de liens, retourner le texte de la liste ─────
+        if not liens_produits:
+            texte = soup.get_text(separator="\n", strip=True)
+            texte = re.sub(r'\n{3,}', '\n\n', texte).strip()
+            if len(texte) > 100:
+                return f"[Produits actifs SAMANTAN]\n{texte[:6000]}"
+            return "Aucun produit actif trouvé. Consulter www.samantan.net"
+
+        # ── Étape 6 : Entrer dans chaque fiche produit ────────────────────
+        fiches = []
+        MAX_PRODUITS = 20
+
+        logger.info(f"Exploration de {min(len(liens_produits), MAX_PRODUITS)} fiches produits...")
 
         for nom_produit, url_produit in liens_produits[:MAX_PRODUITS]:
             try:
                 r = await client.get(url_produit, timeout=15.0)
                 if r.status_code == 200:
                     details = _extraire_details_produit(r.text)
-                    if details and len(details) > 50:
-                        # Vérifier que ce n'est pas un produit inactif
-                        details_lower = details.lower()
-                        if any(mot in details_lower for mot in [
-                            "rupture", "indisponible", "out of stock",
-                            "épuisé", "inactif"
-                        ]):
-                            logger.info(f"Produit ignoré (inactif) : {nom_produit}")
-                            continue
-
-                        fiches_produits.append(
-                            f"{'='*50}\n{details}\n"
-                        )
-                        logger.info(f"Détails récupérés : {nom_produit}")
+                    if details and len(details) > 30:
+                        fiches.append(f"── {nom_produit} ──\n{details}")
+                        logger.info(f"✓ Fiche : {nom_produit}")
+                    else:
+                        logger.debug(f"Fiche vide : {nom_produit}")
             except Exception as e:
-                logger.debug(f"Produit {nom_produit} : {e}")
+                logger.debug(f"Erreur fiche {nom_produit} : {e}")
 
-        if not fiches_produits:
-            # Fallback au contenu général
-            texte_general = _extraire_produits_actifs(html_catalogue)
-            return f"[Catalogue SAMANTAN]\n{texte_general}"
+        # ── Étape 7 : Construire la réponse finale ─────────────────────────
+        if fiches:
+            entete = f"[{len(fiches)} produits actifs SAMANTAN]\n\n"
+            return entete + "\n\n".join(fiches)
 
-        entete = f"[Catalogue SAMANTAN — {len(fiches_produits)} produits actifs]\n\n"
-        return entete + "\n".join(fiches_produits)
+        # Fallback : texte brut de la liste
+        texte = soup.get_text(separator="\n", strip=True)
+        texte = re.sub(r'\n{3,}', '\n\n', texte).strip()
+        return f"[Produits actifs SAMANTAN]\n{texte[:6000]}"
