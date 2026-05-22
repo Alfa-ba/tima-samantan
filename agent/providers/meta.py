@@ -30,20 +30,41 @@ class ProveedorMeta(ProveedorWhatsApp):
         return None
 
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
-        """Parse le payload de Meta Cloud API."""
+        """Parse le payload de Meta Cloud API (texte + vocaux)."""
         body = await request.json()
         mensajes = []
         for entry in body.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 for msg in value.get("messages", []):
-                    if msg.get("type") == "text":
+                    tipo = msg.get("type")
+
+                    if tipo == "text":
+                        # Message texte normal
                         mensajes.append(MensajeEntrante(
                             telefono=msg.get("from", ""),
                             texto=msg.get("text", {}).get("body", ""),
                             mensaje_id=msg.get("id", ""),
                             es_propio=False,
                         ))
+
+                    elif tipo == "audio":
+                        # Vocal WhatsApp — télécharger et transcrire
+                        media_id = msg.get("audio", {}).get("id", "")
+                        if media_id and self.access_token:
+                            from agent.transcriber import transcrire_vocal_meta
+                            texto = await transcrire_vocal_meta(media_id, self.access_token)
+                            if texto:
+                                logger.info(f"Vocal transcrit de {msg.get('from', '')} : {texto[:60]}...")
+                                mensajes.append(MensajeEntrante(
+                                    telefono=msg.get("from", ""),
+                                    texto=texto,
+                                    mensaje_id=msg.get("id", ""),
+                                    es_propio=False,
+                                ))
+                            else:
+                                logger.warning("Vocal reçu mais transcription échouée ou vide")
+
         return mensajes
 
     async def enviar_mensaje(self, telefono: str, mensaje: str) -> bool:
