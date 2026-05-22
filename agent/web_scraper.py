@@ -625,6 +625,64 @@ async def prechauffer_catalogue() -> None:
         logger.warning(f"Préchauffage catalogue échoué : {e} — Tima fonctionne normalement")
 
 
+async def scraper_pages_samantan() -> None:
+    """
+    Scrape et mémorise dans knowledge/ les pages importantes de SAMANTAN :
+      - /nouvelle-ordonnance        → formulaire_ordonnance.md
+      - /mon-reseau-d-opticiens     → reseau_opticiens.md
+
+    Fait un seul login puis scrape toutes les pages.
+    Appelé en tâche de fond au démarrage.
+    """
+    pages = [
+        ("formulaire_ordonnance.md", "/nouvelle-ordonnance",       "Formulaire nouvelle ordonnance SAMANTAN"),
+        ("reseau_opticiens.md",      "/mon-reseau-d-opticiens",    "Réseau d'opticiens SAMANTAN"),
+    ]
+
+    knowledge_dir = KNOWLEDGE_FILE.parent
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=20.0, headers=HEADERS) as client:
+        # ── Login ──────────────────────────────────────────────────────────────
+        await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+        r_login = await client.post(
+            f"{SAMANTAN_URL}/connexion-samantan",
+            data={
+                "_method": "POST",
+                "data[User][email]": LOGIN_EMAIL,
+                "data[User][password]": LOGIN_PASSWORD,
+            },
+            timeout=15.0,
+        )
+        if r_login.status_code not in [200, 302]:
+            logger.warning(f"scraper_pages_samantan : login échoué ({r_login.status_code})")
+            return
+        logger.info("scraper_pages_samantan : login OK")
+
+        # ── Scrape chaque page ─────────────────────────────────────────────────
+        for filename, path, title in pages:
+            try:
+                r = await client.get(
+                    f"{SAMANTAN_URL}{path}", follow_redirects=True, timeout=20.0
+                )
+                if r.status_code == 200 and "connexion" not in str(r.url):
+                    texte = _extraire_texte(r.text)
+                    if len(texte) > 100:
+                        (knowledge_dir / filename).write_text(
+                            f"# {title}\n"
+                            f"_Source : {SAMANTAN_URL}{path}_\n\n"
+                            f"{texte[:8000]}",
+                            encoding="utf-8",
+                        )
+                        logger.info(f"Mémorisé : {title} ({len(texte)} chars) → {filename}")
+                    else:
+                        logger.warning(f"Page '{title}' : contenu trop court ({len(texte)} chars)")
+                else:
+                    logger.warning(f"Page '{title}' inaccessible : {r.status_code} | {r.url}")
+            except Exception as e:
+                logger.warning(f"Page '{title}' : {e}")
+
+
 # ── Ordonnances SAMANTAN ───────────────────────────────────────────────────────
 
 ORDONNANCES_URL = f"{SAMANTAN_URL}/liste-des-ordonnances"

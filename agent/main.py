@@ -52,8 +52,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Préchauffage catalogue : {e} — Tima fonctionne normalement")
 
+    async def _scraper_pages():
+        try:
+            from agent.web_scraper import scraper_pages_samantan
+            logger.info("Scraping pages SAMANTAN (ordonnances, réseau)...")
+            await asyncio.wait_for(scraper_pages_samantan(), timeout=90.0)
+            logger.info("Pages SAMANTAN mémorisées ✓")
+        except asyncio.TimeoutError:
+            logger.warning("Scraper pages timeout (90s)")
+        except Exception as e:
+            logger.warning(f"Scraper pages : {e}")
+
     asyncio.create_task(_scraper_background())
     asyncio.create_task(_prechauffer_catalogue())
+    asyncio.create_task(_scraper_pages())
 
     async def _rafraichir_catalogue_24h():
         """Rafraîchit le catalogue toutes les 24h en arrière-plan."""
