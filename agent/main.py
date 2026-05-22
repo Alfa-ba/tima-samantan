@@ -144,8 +144,20 @@ async def test_login():
                     "redirected_to_login": "connexion" in str(r3.url),
                     "ms": int((time.monotonic()-t2)*1000)
                 }
+                # Étape 4 — GET ordonnances
+                t3 = time.monotonic()
+                ord_url = f"{SAMANTAN_URL}/liste-des-ordonnances"
+                r4 = await c.get(ord_url, follow_redirects=True, timeout=15.0)
+                result["steps"]["4_get_ordonnances"] = {
+                    "status": r4.status_code,
+                    "final_url": str(r4.url),
+                    "content_chars": len(r4.text),
+                    "redirected_to_login": "connexion" in str(r4.url),
+                    "ms": int((time.monotonic()-t3)*1000)
+                }
             else:
                 result["steps"]["3_get_catalogue"] = "skipped — login failed"
+                result["steps"]["4_get_ordonnances"] = "skipped — login failed"
     except Exception as e:
         result["error"] = str(e)
     return result

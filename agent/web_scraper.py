@@ -21,6 +21,10 @@ KNOWLEDGE_FILE = Path("knowledge/samantan_web.md")
 _catalogue_cache: dict = {"data": None, "ts": 0.0}
 _CACHE_TTL_SECS: float = 25 * 60 * 60  # 25h (cycle de refresh = 24h, légère marge)
 
+# ── Cache ordonnances (TTL court : les commandes changent souvent) ──────────────
+_ordonnances_cache: dict = {"data": None, "ts": 0.0}
+_ORDONNANCES_TTL_SECS: float = 5 * 60  # 5 minutes
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
@@ -619,3 +623,120 @@ async def prechauffer_catalogue() -> None:
             )
     except Exception as e:
         logger.warning(f"Préchauffage catalogue échoué : {e} — Tima fonctionne normalement")
+
+
+# ── Ordonnances SAMANTAN ───────────────────────────────────────────────────────
+
+ORDONNANCES_URL = f"{SAMANTAN_URL}/liste-des-ordonnances"
+
+
+async def _fetch_ordonnances_raw() -> str:
+    """Fetch brut de la liste des ordonnances depuis samantan.net."""
+    async with httpx.AsyncClient(
+        follow_redirects=False, timeout=20.0, headers=HEADERS
+    ) as client:
+        # ── Login ──────────────────────────────────────────────────────────────
+        await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+        r_login = await client.post(
+            f"{SAMANTAN_URL}/connexion-samantan",
+            data={
+                "_method": "POST",
+                "data[User][email]": LOGIN_EMAIL,
+                "data[User][password]": LOGIN_PASSWORD,
+            },
+            timeout=15.0,
+        )
+        logger.info(f"Ordonnances login : {r_login.status_code}")
+
+        # ── GET liste des ordonnances ──────────────────────────────────────────
+        r = await client.get(ORDONNANCES_URL, follow_redirects=True, timeout=15.0)
+        if r.status_code != 200 or "connexion" in str(r.url):
+            logger.error(f"Ordonnances inaccessibles : {r.status_code} | {r.url}")
+            return "Liste des ordonnances momentanément inaccessible."
+
+        logger.info(f"Ordonnances chargées : {len(r.text)} chars")
+
+        # ── Parser le tableau ──────────────────────────────────────────────────
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        lignes_resultat = []
+
+        # Chercher les tableaux
+        tables = soup.find_all("table")
+        for table in tables:
+            # En-tête
+            entetes = []
+            thead = table.find("thead")
+            if thead:
+                entetes = [th.get_text(strip=True) for th in thead.find_all(["th", "td"])]
+
+            # Lignes de données
+            tbody = table.find("tbody") or table
+            rows = tbody.find_all("tr")
+            for row in rows:
+                cells = row.find_all(["td", "th"])
+                valeurs = [c.get_text(strip=True) for c in cells]
+                valeurs = [v for v in valeurs if v]
+                if not valeurs:
+                    continue
+                if entetes and len(entetes) == len(valeurs):
+                    ligne = " | ".join(f"{e}: {v}" for e, v in zip(entetes, valeurs))
+                else:
+                    ligne = " | ".join(valeurs)
+                if len(ligne) > 10:
+                    lignes_resultat.append(f"• {ligne}")
+
+        if lignes_resultat:
+            return f"[ORDONNANCES SAMANTAN — {len(lignes_resultat)} entrées]\n" + "\n".join(lignes_resultat[:100])
+
+        # Fallback : texte général
+        for tag in soup(["script", "style", "meta", "nav", "header", "footer", "img", "svg"]):
+            tag.decompose()
+        texte = soup.get_text(separator="\n", strip=True)
+        lignes = [l.strip() for l in texte.split("\n") if len(l.strip()) > 5]
+        return "\n".join(lignes[:150])
+
+
+async def fetch_ordonnances_samantan(recherche: str = "") -> str:
+    """
+    Retourne la liste des ordonnances SAMANTAN avec cache 5 minutes.
+    Filtre par recherche si fournie (référence, nom client, statut...).
+    """
+    global _ordonnances_cache
+    now = time.monotonic()
+
+    # ── Cache frais ────────────────────────────────────────────────────────────
+    if _ordonnances_cache["data"] and (now - _ordonnances_cache["ts"]) < _ORDONNANCES_TTL_SECS:
+        age = int(now - _ordonnances_cache["ts"])
+        logger.info(f"Ordonnances depuis cache ({age}s)")
+        data = _ordonnances_cache["data"]
+    else:
+        logger.info("Fetch ordonnances SAMANTAN...")
+        try:
+            data = await asyncio.wait_for(_fetch_ordonnances_raw(), timeout=12.0)
+            if data and len(data) > 50:
+                _ordonnances_cache["data"] = data
+                _ordonnances_cache["ts"] = now
+                logger.info(f"Cache ordonnances mis à jour ({len(data)} chars)")
+        except asyncio.TimeoutError:
+            logger.warning("Ordonnances fetch timeout (12s)")
+            data = (
+                _ordonnances_cache["data"]
+                or "Liste des ordonnances momentanément inaccessible."
+            )
+        except Exception as e:
+            logger.error(f"Erreur fetch ordonnances : {e}")
+            data = (
+                _ordonnances_cache["data"]
+                or "Liste des ordonnances momentanément inaccessible."
+            )
+
+    # ── Filtrer par recherche ──────────────────────────────────────────────────
+    if recherche and data and "inaccessible" not in data:
+        lignes = data.split("\n")
+        filtrées = [l for l in lignes if not l.startswith("•") or recherche.lower() in l.lower()]
+        if len(filtrées) > 1:
+            return "\n".join(filtrées)
+
+    return data

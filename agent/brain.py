@@ -17,17 +17,35 @@ TOOLS = [
     {
         "name": "consulter_catalogue_samantan",
         "description": (
-            "Accède au menu Catalogue du site web SAMANTAN en temps réel pour "
-            "récupérer les informations produits (descriptions, gammes, disponibilités). "
-            "À utiliser OBLIGATOIREMENT quand un client pose une question sur les produits, "
-            "les verres, les gammes ou les disponibilités de SAMANTAN."
+            "Accède au catalogue SAMANTAN en temps réel pour vérifier les produits actifs, "
+            "références, gammes et disponibilités. Utiliser si le client pose une question "
+            "très spécifique sur un produit ou si les infos du contexte ne suffisent pas."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "recherche": {
                     "type": "string",
-                    "description": "Type de produit recherché (ex: 'progressif', 'transitions', 'unifocal', 'photochromique')"
+                    "description": "Type de produit recherché (ex: 'progressif', 'transitions', 'unifocal')"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "consulter_ordonnances_samantan",
+        "description": (
+            "Accède à la liste des ordonnances/commandes du site SAMANTAN en temps réel. "
+            "Utiliser quand un client demande l'état d'une commande, le suivi d'une "
+            "ordonnance, des informations sur les prescriptions en cours, ou l'historique "
+            "des commandes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recherche": {
+                    "type": "string",
+                    "description": "Référence de commande, nom du client, statut ou autre terme de recherche"
                 }
             },
             "required": []
@@ -115,6 +133,13 @@ async def _executer_outil(nom: str, parametres: dict) -> str:
         recherche = parametres.get("recherche", "")
         logger.info(f"Tima consulte le catalogue SAMANTAN (recherche: '{recherche}')")
         return await fetch_catalogue_samantan(recherche)
+
+    if nom == "consulter_ordonnances_samantan":
+        from agent.web_scraper import fetch_ordonnances_samantan
+        recherche = parametres.get("recherche", "")
+        logger.info(f"Tima consulte les ordonnances SAMANTAN (recherche: '{recherche}')")
+        return await fetch_ordonnances_samantan(recherche)
+
     return "Outil inconnu."
 
 
