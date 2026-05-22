@@ -217,6 +217,170 @@ async def scraper_samantan() -> str:
     return resultat
 
 
+def _extraire_liens_produits(html: str, base_url: str) -> list[tuple[str, str]]:
+    """
+    Extrait les liens vers les pages de détail des produits actifs.
+    Retourne une liste de (nom_produit, url_produit).
+    """
+    liens = []
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+
+        # Chercher les liens produits dans différentes structures
+        selecteurs = [
+            "li.product a.woocommerce-loop-product__link",
+            "li.product h2 a",
+            "li.product a[href]",
+            ".product-item a[href]",
+            ".catalogue-item a[href]",
+            "article.product a[href]",
+            ".produit a[href]",
+            "a.product-link",
+        ]
+
+        vus = set()
+        for sel in selecteurs:
+            elements = soup.select(sel)
+            for el in elements:
+                href = el.get("href", "")
+                nom = el.get_text(strip=True) or el.get("title", "")
+
+                # Construire URL absolue
+                if href.startswith("/"):
+                    url = f"{base_url}{href}"
+                elif href.startswith("http"):
+                    url = href
+                else:
+                    continue
+
+                # Éviter les doublons et les URLs non-produit
+                if url in vus:
+                    continue
+                if any(x in url for x in ["#", "?add-to-cart", "/cart", "/panier"]):
+                    continue
+
+                vus.add(url)
+                if not nom:
+                    nom = url.split("/")[-1].replace("-", " ").title()
+                liens.append((nom, url))
+
+        logger.info(f"Liens produits trouvés : {len(liens)}")
+    except Exception as e:
+        logger.warning(f"Erreur extraction liens produits : {e}")
+
+    return liens
+
+
+def _extraire_details_produit(html: str) -> str:
+    """
+    Extrait TOUS les détails d'une page produit individuelle.
+    Récupère : nom, description, caractéristiques, spécifications techniques,
+    matière, traitement, disponibilité, etc.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+
+        details = []
+
+        # ── Nom du produit ─────────────────────────────────────────────────
+        for sel in ["h1.product_title", "h1.entry-title", ".product-title h1",
+                    "h1", ".product__title"]:
+            el = soup.select_one(sel)
+            if el:
+                nom = el.get_text(strip=True)
+                if nom:
+                    details.append(f"Produit : {nom}")
+                    break
+
+        # ── Statut / disponibilité ─────────────────────────────────────────
+        for sel in [".stock", ".availability", ".product-availability",
+                    ".woocommerce-product-details__short-description .stock"]:
+            el = soup.select_one(sel)
+            if el:
+                statut = el.get_text(strip=True)
+                if statut:
+                    details.append(f"Disponibilité : {statut}")
+                    break
+
+        # ── Description courte ─────────────────────────────────────────────
+        for sel in [".woocommerce-product-details__short-description",
+                    ".product-short-description", ".short-description",
+                    ".product__description--short"]:
+            el = soup.select_one(sel)
+            if el:
+                texte = el.get_text(separator=" ", strip=True)
+                texte = re.sub(r'\s+', ' ', texte).strip()
+                if texte:
+                    details.append(f"Description : {texte}")
+                    break
+
+        # ── Description longue / onglets ───────────────────────────────────
+        for sel in [".woocommerce-Tabs-panel--description",
+                    "#tab-description", ".product-description",
+                    ".woocommerce-product-details", ".product__content"]:
+            el = soup.select_one(sel)
+            if el:
+                for tag in el(["script", "style", "img", "svg"]):
+                    tag.decompose()
+                texte = el.get_text(separator="\n", strip=True)
+                texte = re.sub(r'\n{3,}', '\n\n', texte).strip()
+                if len(texte) > 50:
+                    details.append(f"Détails :\n{texte[:2000]}")
+                    break
+
+        # ── Attributs / caractéristiques techniques ────────────────────────
+        for sel in [".woocommerce-product-attributes",
+                    ".product-attributes", ".product__attributes",
+                    "table.variations", ".product-details-table"]:
+            table = soup.select_one(sel)
+            if table:
+                rows = table.find_all("tr")
+                specs = []
+                for row in rows:
+                    label = row.find(["th", "td"])
+                    valeur = row.find_all(["th", "td"])
+                    if len(valeur) >= 2:
+                        l = valeur[0].get_text(strip=True)
+                        v = valeur[1].get_text(strip=True)
+                        if l and v:
+                            specs.append(f"  • {l} : {v}")
+                if specs:
+                    details.append("Caractéristiques techniques :\n" + "\n".join(specs))
+                    break
+
+        # ── Catégories / tags ──────────────────────────────────────────────
+        for sel in [".posted_in", ".product_meta .cat-links",
+                    ".product-categories", ".woocommerce-product-details__categories"]:
+            el = soup.select_one(sel)
+            if el:
+                texte = el.get_text(strip=True)
+                if texte:
+                    details.append(f"Catégorie : {texte}")
+                    break
+
+        # ── Fallback : extraire tout le contenu principal ──────────────────
+        if len(details) <= 1:
+            for sel in [".product", "main", "article", "#content"]:
+                el = soup.select_one(sel)
+                if el:
+                    for tag in el(["script", "style", "img", "svg", "nav",
+                                   "header", "footer", ".related", ".upsells"]):
+                        tag.decompose()
+                    texte = el.get_text(separator="\n", strip=True)
+                    texte = re.sub(r'\n{3,}', '\n\n', texte).strip()
+                    if len(texte) > 100:
+                        details.append(texte[:3000])
+                        break
+
+        return "\n".join(details) if details else ""
+
+    except Exception as e:
+        logger.warning(f"Erreur extraction détails produit : {e}")
+        return ""
+
+
 async def fetch_catalogue_samantan(recherche: str = "") -> str:
     """
     Accède au menu Catalogue de samantan.net en temps réel et retourne
@@ -276,24 +440,64 @@ async def fetch_catalogue_samantan(recherche: str = "") -> str:
         except Exception as e:
             logger.warning(f"Connexion catalogue : {e}")
 
-        # Scraper les pages catalogue — produits actifs uniquement
+        html_catalogue = ""
+        catalogue_url_utilisee = ""
+
+        # ── Étape 1 : Trouver la page catalogue ────────────────────────────
         for nom, chemin in pages_catalogue:
             try:
                 r = await client.get(f"{SAMANTAN_URL}{chemin}", timeout=15.0)
-                if r.status_code == 200:
-                    # Utiliser l'extracteur de produits actifs
-                    texte = _extraire_produits_actifs(r.text)
-                    if len(texte) > 150:
-                        contenu.append(
-                            f"[Produits actifs — {nom}]\n{texte[:4000]}"
-                        )
-                        logger.info(f"Produits actifs récupérés : {nom}")
-                        if len(contenu) >= 3:
-                            break
+                if r.status_code == 200 and len(r.text) > 500:
+                    html_catalogue = r.text
+                    catalogue_url_utilisee = chemin
+                    logger.info(f"Page catalogue trouvée : {nom} ({chemin})")
+                    break
             except Exception as e:
                 logger.debug(f"Page catalogue {chemin} : {e}")
 
-    if not contenu:
-        return "Catalogue momentanément inaccessible. Consulter www.samantan.net directement."
+        if not html_catalogue:
+            return "Catalogue momentanément inaccessible. Consulter www.samantan.net"
 
-    return "\n\n".join(contenu)
+        # ── Étape 2 : Extraire les liens vers chaque produit ───────────────
+        liens_produits = _extraire_liens_produits(html_catalogue, SAMANTAN_URL)
+
+        # Si aucun lien trouvé, retourner le contenu général du catalogue
+        if not liens_produits:
+            texte_general = _extraire_produits_actifs(html_catalogue)
+            if texte_general:
+                return f"[Catalogue SAMANTAN — produits actifs]\n{texte_general}"
+            return "Catalogue momentanément inaccessible. Consulter www.samantan.net"
+
+        # ── Étape 3 : Entrer dans chaque page produit ─────────────────────
+        fiches_produits = []
+        MAX_PRODUITS = 15  # Limite pour éviter des réponses trop longues
+
+        for nom_produit, url_produit in liens_produits[:MAX_PRODUITS]:
+            try:
+                r = await client.get(url_produit, timeout=15.0)
+                if r.status_code == 200:
+                    details = _extraire_details_produit(r.text)
+                    if details and len(details) > 50:
+                        # Vérifier que ce n'est pas un produit inactif
+                        details_lower = details.lower()
+                        if any(mot in details_lower for mot in [
+                            "rupture", "indisponible", "out of stock",
+                            "épuisé", "inactif"
+                        ]):
+                            logger.info(f"Produit ignoré (inactif) : {nom_produit}")
+                            continue
+
+                        fiches_produits.append(
+                            f"{'='*50}\n{details}\n"
+                        )
+                        logger.info(f"Détails récupérés : {nom_produit}")
+            except Exception as e:
+                logger.debug(f"Produit {nom_produit} : {e}")
+
+        if not fiches_produits:
+            # Fallback au contenu général
+            texte_general = _extraire_produits_actifs(html_catalogue)
+            return f"[Catalogue SAMANTAN]\n{texte_general}"
+
+        entete = f"[Catalogue SAMANTAN — {len(fiches_produits)} produits actifs]\n\n"
+        return entete + "\n".join(fiches_produits)
