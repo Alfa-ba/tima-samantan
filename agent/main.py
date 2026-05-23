@@ -468,28 +468,35 @@ async def test_claude_full():
 @app.get("/test-ordonnance")
 async def test_ordonnance(url: str, message: str = ""):
     """
-    Teste la lecture d'une photo d'ordonnance par Tima (Claude Vision).
-    Exemple : /test-ordonnance?url=https://exemple.com/ordonnance.jpg
+    Teste la lecture d'une ordonnance par Tima (image OU document PDF/Word/Excel).
+    Détecte automatiquement le type selon l'extension de l'URL.
 
-    Retourne ce que Tima lit dans l'image (Sph/Cyl/Axe/Add, etc.)
+    Exemples :
+      /test-ordonnance?url=https://exemple.com/ordonnance.jpg   (image)
+      /test-ordonnance?url=https://exemple.com/commande.pdf     (PDF)
+      /test-ordonnance?url=https://exemple.com/commande.xlsx    (Excel)
     """
     from agent.brain import generar_respuesta
+    url_lower = url.lower()
+    est_document = any(ext in url_lower for ext in [".pdf", ".docx", ".doc", ".xlsx", ".xls"])
     try:
         respuesta = await generar_respuesta(
             mensaje=message,
             historial=[],
             telefono="",
-            imagen_url=url,
+            imagen_url="" if est_document else url,
+            documento_url=url if est_document else "",
         )
         return {
-            "image_url": url,
+            "url": url,
+            "type_detecte": "document" if est_document else "image",
             "legende": message or "(aucune)",
             "lecture_tima": respuesta,
             "longueur": len(respuesta),
         }
     except Exception as e:
         logger.error(f"test-ordonnance erreur : {e}")
-        return {"erreur": str(e), "type": type(e).__name__, "image_url": url}
+        return {"erreur": str(e), "type": type(e).__name__, "url": url}
 
 
 @app.get("/test-tima")
