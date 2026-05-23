@@ -465,6 +465,33 @@ async def test_claude_full():
         return {"status": "erreur", "type": type(e).__name__, "message": str(e)}
 
 
+@app.get("/test-ordonnance")
+async def test_ordonnance(url: str, message: str = ""):
+    """
+    Teste la lecture d'une photo d'ordonnance par Tima (Claude Vision).
+    Exemple : /test-ordonnance?url=https://exemple.com/ordonnance.jpg
+
+    Retourne ce que Tima lit dans l'image (Sph/Cyl/Axe/Add, etc.)
+    """
+    from agent.brain import generar_respuesta
+    try:
+        respuesta = await generar_respuesta(
+            mensaje=message,
+            historial=[],
+            telefono="",
+            imagen_url=url,
+        )
+        return {
+            "image_url": url,
+            "legende": message or "(aucune)",
+            "lecture_tima": respuesta,
+            "longueur": len(respuesta),
+        }
+    except Exception as e:
+        logger.error(f"test-ordonnance erreur : {e}")
+        return {"erreur": str(e), "type": type(e).__name__, "image_url": url}
+
+
 @app.get("/test-tima")
 async def test_tima(message: str = "Bonjour, quels sont vos progressifs ?"):
     """
