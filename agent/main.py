@@ -975,6 +975,54 @@ def _est_message_samantan(texte: str) -> bool:
     return False
 
 
+def _traiter_commande_relais(texte: str, telefono_admin: str) -> str | None:
+    """
+    Détecte et exécute les commandes de relais humain envoyées à Tima via WhatsApp.
+    Retourne un message de confirmation si c'est une commande, None sinon.
+
+    Commandes reconnues :
+      PAUSE 221XXXXXXXX   → Tima se tait pour ce client
+      RESUME 221XXXXXXXX  → Tima reprend pour ce client
+      # 221XXXXXXXX       → idem RESUME
+      RELAIS              → liste les conversations en pause
+    """
+    global _conversations_humain
+    texte_net = texte.strip()
+    texte_upper = texte_net.upper()
+
+    # ── RELAIS → liste des conversations en pause ──────────────────────────────
+    if texte_upper == "RELAIS":
+        if not _conversations_humain:
+            return "✅ Aucune conversation en pause — Tima est active partout."
+        liste = "\n".join(f"  • {t}" for t in _conversations_humain)
+        return f"⏸️ Conversations en pause ({len(_conversations_humain)}) :\n{liste}"
+
+    # ── Extraire commande + numéro ─────────────────────────────────────────────
+    match = _re.match(
+        r'^(PAUSE|RESUME|#)\s*\+?(\d{8,15})\s*$',
+        texte_net, _re.IGNORECASE
+    )
+    if not match:
+        return None  # Pas une commande
+
+    commande = match.group(1).upper()
+    tel = match.group(2).lstrip("0")
+
+    if commande == "PAUSE":
+        _conversations_humain[tel] = True
+        logger.info(f"⏸️ Relais activé par {telefono_admin} pour {tel}")
+        return f"⏸️ Tima en pause pour {tel}.\nEnvoie RESUME {tel} ou # {tel} quand tu as fini."
+
+    if commande in ("RESUME", "#"):
+        if tel in _conversations_humain:
+            del _conversations_humain[tel]
+            logger.info(f"✅ Relais rendu à Tima par {telefono_admin} pour {tel}")
+            return f"✅ Tima reprend pour {tel}."
+        return f"ℹ️ {tel} n'était pas en pause."
+
+    return None
+
+
 async def _traiter_message(msg, prov) -> None:
     """Traite un message en arrière-plan — Claude + envoi réponse."""
     try:
@@ -984,7 +1032,14 @@ async def _traiter_message(msg, prov) -> None:
                 f"Message SAMANTAN ignoré (notification auto) "
                 f"de {msg.telefono} : '{msg.texto[:60]}'"
             )
-            return  # Pas de réponse, pas de sauvegarde
+            return
+
+        # ── Commandes de relais humain (PAUSE/RESUME/# + numéro) ──────────────
+        confirmation = _traiter_commande_relais(msg.texto, msg.telefono)
+        if confirmation is not None:
+            logger.info(f"Commande relais de {msg.telefono} : {msg.texto[:40]}")
+            await prov.enviar_mensaje(msg.telefono, confirmation)
+            return
 
         logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
         historial = await obtener_historial(msg.telefono)
