@@ -876,6 +876,46 @@ async def simuler_prix():
         return {"erreur": str(e)}
 
 
+@app.get("/pause/{telefono}")
+async def pause_conversation(telefono: str):
+    """
+    ⏸️ Met Tima en pause pour un client — l'équipe SAMANTAN prend le relais.
+    Appeler : GET /pause/221XXXXXXXX
+    """
+    tel = telefono.strip().lstrip("+")
+    _conversations_humain[tel] = True
+    logger.info(f"⏸️ Relais humain activé manuellement pour {tel}")
+    return {
+        "status": "pause",
+        "client": tel,
+        "message": f"Tima en pause pour {tel}. Envoyer GET /resume/{tel} pour reprendre.",
+    }
+
+
+@app.get("/resume/{telefono}")
+async def resume_conversation(telefono: str):
+    """
+    ✅ Rend le relais à Tima pour un client.
+    Appeler : GET /resume/221XXXXXXXX
+    """
+    tel = telefono.strip().lstrip("+")
+    if tel in _conversations_humain:
+        del _conversations_humain[tel]
+        logger.info(f"✅ Relais rendu à Tima pour {tel}")
+        return {"status": "reprise", "client": tel, "message": f"Tima reprend pour {tel}."}
+    return {"status": "deja_actif", "client": tel, "message": "Tima était déjà active pour ce client."}
+
+
+@app.get("/relais")
+async def liste_relais():
+    """Liste toutes les conversations actuellement en pause (relais humain actif)."""
+    return {
+        "conversations_en_pause": list(_conversations_humain.keys()),
+        "total": len(_conversations_humain),
+        "info": "Tima est silencieuse pour ces numéros. GET /resume/{tel} pour reprendre.",
+    }
+
+
 @app.get("/webhook")
 async def webhook_verificacion(request: Request):
     """Vérification GET du webhook (requis par Meta, no-op pour Twilio)."""
@@ -970,29 +1010,8 @@ async def webhook_handler(request: Request):
         mensajes = await proveedor.parsear_webhook(request)
 
         for msg in mensajes:
-            if not msg.texto:
+            if msg.es_propio or not msg.texto:
                 continue
-
-            # ── Messages envoyés PAR l'équipe SAMANTAN (fromMe) ───────────────
-            if msg.es_propio:
-                texte_net = msg.texto.strip()
-
-                if texte_net == SIGNAL_REPRISE:
-                    # "#" → Tima reprend le relais pour ce client
-                    if msg.telefono in _conversations_humain:
-                        del _conversations_humain[msg.telefono]
-                        logger.info(f"✅ Relais rendu à Tima — {msg.telefono}")
-                    else:
-                        logger.info(f"# reçu mais {msg.telefono} n'était pas en pause")
-                else:
-                    # Tout autre message de l'équipe → pause Tima pour ce client
-                    if msg.telefono not in _conversations_humain:
-                        _conversations_humain[msg.telefono] = True
-                        logger.info(
-                            f"⏸️  Relais humain activé pour {msg.telefono} "
-                            f"— Tima en pause. Envoyer '#' pour reprendre."
-                        )
-                continue  # Ne pas traiter les messages de l'équipe comme client
 
             # ── Déduplication : ignorer si déjà traité ─────────────────────────
             if msg.mensaje_id and msg.mensaje_id in _messages_traites:
@@ -1005,11 +1024,10 @@ async def webhook_handler(request: Request):
                     plus_vieux = next(iter(_messages_traites))
                     _messages_traites.discard(plus_vieux)
 
-            # ── Vérifier si Tima est en pause pour ce client ───────────────────
+            # ── Vérifier si Tima est en pause pour ce client (relais humain) ───
             if _conversations_humain.get(msg.telefono):
                 logger.info(
-                    f"⏸️  Tima en pause pour {msg.telefono} "
-                    f"— message ignoré (relais humain actif)"
+                    f"⏸️  Tima en pause pour {msg.telefono} — relais humain actif"
                 )
                 continue
 
