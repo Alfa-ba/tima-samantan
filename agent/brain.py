@@ -357,5 +357,6 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         return respuesta
 
     except Exception as e:
-        logger.error(f"Erreur API Claude : {e}")
-        return obtener_mensaje_error()
+        import traceback
+        logger.error(f"Erreur API Claude : {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        return f"[DEBUG {type(e).__name__}] {e}"
