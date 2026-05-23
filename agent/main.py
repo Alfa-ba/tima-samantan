@@ -891,43 +891,39 @@ _messages_traites: set = set()
 
 import re as _re
 
-def _est_message_broadcast(texte: str) -> bool:
+def _est_message_samantan(texte: str) -> bool:
     """
-    Détecte les messages automatiques SAMANTAN que Tima doit ignorer silencieusement.
+    RÈGLE SIMPLE : Si SAMANTAN parle avec un client (opticien), Tima ne répond pas.
 
-    Exemples ignorés (notifications automatiques) :
-      "Bonjour YELETA OPTIC, Vos 4 ordonnances..."
-      "Bonjour, Les 8 ordonnances ci-dessous ont été mis à l'état transmis au labo..."
-      "Bonjour OPTIQUE PONTY" (message vide)
-      Tout message contenant des références ORD-XXXXX
-      Tout message se terminant par "SAMANTAN vous remercie."
+    Détecte tous les messages envoyés par le système SAMANTAN aux opticiens :
+    notifications d'ordonnances, livraisons, statuts, etc.
     """
     if not texte:
         return False
-    texte_strip = texte.strip()
-    texte_lower = texte_strip.lower()
+    texte_lower = texte.strip().lower()
 
-    # ── Règle 1 : contient une référence d'ordonnance ORD-XXXXX ───────────────
-    if _re.search(r'\bORD-[A-Z0-9]{4,}\b', texte_strip):
+    # ── Règle 1 : référence d'ordonnance ORD-XXXXX (signature SAMANTAN) ───────
+    if _re.search(r'\bORD-[A-Z0-9]{4,}\b', texte):
         return True
 
-    # ── Règle 2 : se termine par "SAMANTAN vous remercie" ─────────────────────
+    # ── Règle 2 : signature de fin SAMANTAN ───────────────────────────────────
     if "samantan vous remercie" in texte_lower:
         return True
 
-    # ── Règle 3 : contient des marqueurs de notifications automatiques ─────────
-    marqueurs_auto = [
+    # ── Règle 3 : mots-clés des notifications SAMANTAN ────────────────────────
+    marqueurs = [
         "transmis au labo",
         "arrivées dans nos locaux",
         "arriveront à dakar",
         "à livrer dans la journée",
-        "prendre en charge",
         "merci de prendre en charge",
         "ordonnances ci-dessous",
         "références ci-dessous",
         "l'équipe samantan",
+        "mis à l'état",
+        "état transmis",
     ]
-    if any(m in texte_lower for m in marqueurs_auto):
+    if any(m in texte_lower for m in marqueurs):
         return True
 
     return False
@@ -936,10 +932,10 @@ def _est_message_broadcast(texte: str) -> bool:
 async def _traiter_message(msg, prov) -> None:
     """Traite un message en arrière-plan — Claude + envoi réponse."""
     try:
-        # ── Ignorer les messages broadcast "Bonjour [NOM]" ────────────────────
-        if _est_message_broadcast(msg.texto):
+        # ── Ignorer les messages SAMANTAN → clients (notifications auto) ─────────
+        if _est_message_samantan(msg.texto):
             logger.info(
-                f"Message broadcast ignoré (Bonjour + nom) "
+                f"Message SAMANTAN ignoré (notification auto) "
                 f"de {msg.telefono} : '{msg.texto[:60]}'"
             )
             return  # Pas de réponse, pas de sauvegarde
