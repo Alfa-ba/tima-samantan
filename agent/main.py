@@ -876,46 +876,6 @@ async def simuler_prix():
         return {"erreur": str(e)}
 
 
-@app.get("/pause/{telefono}")
-async def pause_conversation(telefono: str):
-    """
-    ⏸️ Met Tima en pause pour un client — l'équipe SAMANTAN prend le relais.
-    Appeler : GET /pause/221XXXXXXXX
-    """
-    tel = telefono.strip().lstrip("+")
-    _conversations_humain[tel] = True
-    logger.info(f"⏸️ Relais humain activé manuellement pour {tel}")
-    return {
-        "status": "pause",
-        "client": tel,
-        "message": f"Tima en pause pour {tel}. Envoyer GET /resume/{tel} pour reprendre.",
-    }
-
-
-@app.get("/resume/{telefono}")
-async def resume_conversation(telefono: str):
-    """
-    ✅ Rend le relais à Tima pour un client.
-    Appeler : GET /resume/221XXXXXXXX
-    """
-    tel = telefono.strip().lstrip("+")
-    if tel in _conversations_humain:
-        del _conversations_humain[tel]
-        logger.info(f"✅ Relais rendu à Tima pour {tel}")
-        return {"status": "reprise", "client": tel, "message": f"Tima reprend pour {tel}."}
-    return {"status": "deja_actif", "client": tel, "message": "Tima était déjà active pour ce client."}
-
-
-@app.get("/relais")
-async def liste_relais():
-    """Liste toutes les conversations actuellement en pause (relais humain actif)."""
-    return {
-        "conversations_en_pause": list(_conversations_humain.keys()),
-        "total": len(_conversations_humain),
-        "info": "Tima est silencieuse pour ces numéros. GET /resume/{tel} pour reprendre.",
-    }
-
-
 @app.get("/webhook")
 async def webhook_verificacion(request: Request):
     """Vérification GET du webhook (requis par Meta, no-op pour Twilio)."""
@@ -927,12 +887,6 @@ async def webhook_verificacion(request: Request):
 
 # ── Déduplication des messages (évite les doublons Meta) ──────────────────────
 _messages_traites: set = set()
-
-# ── Relais humain — conversations en pause (gérées par l'équipe SAMANTAN) ─────
-# Clé : numéro du client | Valeur : True = humain aux commandes, Tima en pause
-_conversations_humain: dict[str, bool] = {}
-
-SIGNAL_REPRISE = "#"  # L'équipe envoie "#" pour rendre le relais à Tima
 
 
 import re as _re
@@ -975,54 +929,6 @@ def _est_message_samantan(texte: str) -> bool:
     return False
 
 
-def _traiter_commande_relais(texte: str, telefono_admin: str) -> str | None:
-    """
-    Détecte et exécute les commandes de relais humain envoyées à Tima via WhatsApp.
-    Retourne un message de confirmation si c'est une commande, None sinon.
-
-    Commandes reconnues :
-      PAUSE 221XXXXXXXX   → Tima se tait pour ce client
-      RESUME 221XXXXXXXX  → Tima reprend pour ce client
-      # 221XXXXXXXX       → idem RESUME
-      RELAIS              → liste les conversations en pause
-    """
-    global _conversations_humain
-    texte_net = texte.strip()
-    texte_upper = texte_net.upper()
-
-    # ── RELAIS → liste des conversations en pause ──────────────────────────────
-    if texte_upper == "RELAIS":
-        if not _conversations_humain:
-            return "✅ Aucune conversation en pause — Tima est active partout."
-        liste = "\n".join(f"  • {t}" for t in _conversations_humain)
-        return f"⏸️ Conversations en pause ({len(_conversations_humain)}) :\n{liste}"
-
-    # ── Extraire commande + numéro ─────────────────────────────────────────────
-    match = _re.match(
-        r'^(PAUSE|RESUME|#)\s*\+?(\d{8,15})\s*$',
-        texte_net, _re.IGNORECASE
-    )
-    if not match:
-        return None  # Pas une commande
-
-    commande = match.group(1).upper()
-    tel = match.group(2).lstrip("0")
-
-    if commande == "PAUSE":
-        _conversations_humain[tel] = True
-        logger.info(f"⏸️ Relais activé par {telefono_admin} pour {tel}")
-        return f"⏸️ Tima en pause pour {tel}.\nEnvoie RESUME {tel} ou # {tel} quand tu as fini."
-
-    if commande in ("RESUME", "#"):
-        if tel in _conversations_humain:
-            del _conversations_humain[tel]
-            logger.info(f"✅ Relais rendu à Tima par {telefono_admin} pour {tel}")
-            return f"✅ Tima reprend pour {tel}."
-        return f"ℹ️ {tel} n'était pas en pause."
-
-    return None
-
-
 async def _traiter_message(msg, prov) -> None:
     """Traite un message en arrière-plan — Claude + envoi réponse."""
     try:
@@ -1032,13 +938,6 @@ async def _traiter_message(msg, prov) -> None:
                 f"Message SAMANTAN ignoré (notification auto) "
                 f"de {msg.telefono} : '{msg.texto[:60]}'"
             )
-            return
-
-        # ── Commandes de relais humain (PAUSE/RESUME/# + numéro) ──────────────
-        confirmation = _traiter_commande_relais(msg.texto, msg.telefono)
-        if confirmation is not None:
-            logger.info(f"Commande relais de {msg.telefono} : {msg.texto[:40]}")
-            await prov.enviar_mensaje(msg.telefono, confirmation)
             return
 
         logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
