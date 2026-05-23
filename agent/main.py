@@ -933,11 +933,6 @@ def _est_message_broadcast(texte: str) -> bool:
     if any(m in texte_lower for m in marqueurs_auto):
         return True
 
-    # ── Règle 4 : "Bonjour [NOM]" seul (sans question ni contenu) ─────────────
-    pattern_bonjour_seul = r'^[Bb]onjour[\s,]+[A-ZÀÂÇÉÈÊËÎÏÔÛÙÜŸÆŒ][A-Za-zÀ-ÿ\s\-\'\.]{1,60}[,.]?\s*$'
-    if _re.match(pattern_bonjour_seul, texte_strip):
-        return True
-
     return False
 
 
