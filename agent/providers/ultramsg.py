@@ -101,6 +101,25 @@ class ProveedorUltraMsg(ProveedorWhatsApp):
                 es_propio=False,
                 imagen_url=media_url,
             ))
+        elif msg_type == "document":
+            # Document (PDF, etc.) — UltraMsg met l'URL dans 'media'
+            media_url = data.get("media", "") or data.get("body", "")
+            filename = data.get("filename", "") or data.get("caption", "")
+            caption = data.get("caption", "")
+            logger.info(f"Document reçu de {telefono} : {filename} → {media_url[:80]}")
+
+            # On ne traite que les PDF (les autres docs ne sont pas lisibles par Claude)
+            est_pdf = media_url.lower().endswith(".pdf") or "pdf" in filename.lower()
+            if est_pdf:
+                mensajes.append(MensajeEntrante(
+                    telefono=telefono,
+                    texto=caption,
+                    mensaje_id=msg_id,
+                    es_propio=False,
+                    documento_url=media_url,
+                ))
+            else:
+                logger.info(f"Document non-PDF ignoré : {filename}")
         elif msg_type in ["ptt", "audio"]:
             # Message vocal — pas de transcription UltraMsg pour l'instant
             logger.info(f"Message vocal reçu de {telefono} (non transcrit)")

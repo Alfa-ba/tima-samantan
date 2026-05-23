@@ -12,7 +12,8 @@ class MensajeEntrante:
     texto: str
     mensaje_id: str
     es_propio: bool
-    imagen_url: str = ""  # URL de l'image si le message en contient une (ordonnance, etc.)
+    imagen_url: str = ""      # URL de l'image si le message en contient une (ordonnance, etc.)
+    documento_url: str = ""   # URL du document (PDF) si le message en contient un
 
 
 class ProveedorWhatsApp(ABC):

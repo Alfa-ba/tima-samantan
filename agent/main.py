@@ -997,18 +997,24 @@ async def _traiter_message(msg, prov) -> None:
             return
 
         imagen = getattr(msg, "imagen_url", "")
-        if imagen:
+        documento = getattr(msg, "documento_url", "")
+        if documento:
+            logger.info(f"Traitement PDF de {msg.telefono} (légende: '{msg.texto[:40]}')")
+        elif imagen:
             logger.info(f"Traitement IMAGE de {msg.telefono} (légende: '{msg.texto[:40]}')")
         else:
             logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
 
         historial = await obtener_historial(msg.telefono)
         respuesta = await generar_respuesta(
-            msg.texto, historial, telefono=msg.telefono, imagen_url=imagen
+            msg.texto, historial, telefono=msg.telefono,
+            imagen_url=imagen, documento_url=documento,
         )
 
-        # Sauvegarde : pour une image, noter [photo] dans l'historique
-        texte_a_sauver = msg.texto or ("[photo envoyée]" if imagen else "")
+        # Sauvegarde : noter le type de média dans l'historique
+        texte_a_sauver = msg.texto or (
+            "[PDF envoyé]" if documento else "[photo envoyée]" if imagen else ""
+        )
         await guardar_mensaje(msg.telefono, "user", texte_a_sauver)
         await guardar_mensaje(msg.telefono, "assistant", respuesta)
         await prov.enviar_mensaje(msg.telefono, respuesta)
@@ -1036,8 +1042,12 @@ async def webhook_handler(request: Request):
         mensajes = await proveedor.parsear_webhook(request)
 
         for msg in mensajes:
-            # Ignorer nos propres messages, ou messages vides SANS image
-            if msg.es_propio or (not msg.texto and not getattr(msg, "imagen_url", "")):
+            # Ignorer nos propres messages, ou messages vides SANS image ni PDF
+            if msg.es_propio or (
+                not msg.texto
+                and not getattr(msg, "imagen_url", "")
+                and not getattr(msg, "documento_url", "")
+            ):
                 continue
 
             # ── Déduplication : ignorer si déjà traité ─────────────────────────

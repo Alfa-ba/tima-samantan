@@ -303,11 +303,30 @@ async def _telecharger_image_base64(url: str) -> tuple[str, str] | None:
         return None
 
 
+async def _telecharger_pdf_base64(url: str) -> str | None:
+    """Télécharge un PDF depuis une URL et retourne son base64. None si échec."""
+    import base64
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+            r = await http.get(url)
+            if r.status_code != 200:
+                logger.warning(f"PDF inaccessible : HTTP {r.status_code}")
+                return None
+            b64 = base64.standard_b64encode(r.content).decode("utf-8")
+            logger.info(f"PDF téléchargé : {len(r.content)} bytes")
+            return b64
+    except Exception as e:
+        logger.warning(f"Erreur téléchargement PDF : {e}")
+        return None
+
+
 async def generar_respuesta(
     mensaje: str,
     historial: list[dict],
     telefono: str = "",
     imagen_url: str = "",
+    documento_url: str = "",
 ) -> str:
     """
     Génère une réponse avec l'API Claude.
@@ -321,8 +340,8 @@ async def generar_respuesta(
     Returns:
         Réponse générée par Claude
     """
-    # Si pas d'image et message trop court → fallback
-    if not imagen_url and (not mensaje or len(mensaje.strip()) < 2):
+    # Si pas d'image/PDF et message trop court → fallback
+    if not imagen_url and not documento_url and (not mensaje or len(mensaje.strip()) < 2):
         return obtener_mensaje_fallback()
 
     # ── Identification de l'utilisateur ────────────────────────────────────────
@@ -365,8 +384,36 @@ async def generar_respuesta(
     for msg in historial:
         mensajes.append({"role": msg["role"], "content": msg["content"]})
 
-    # ── Construction du message courant (avec image si présente) ───────────────
-    if imagen_url:
+    # ── Construction du message courant (PDF prioritaire, puis image) ─────────
+    if documento_url:
+        pdf_b64 = await _telecharger_pdf_base64(documento_url)
+        if pdf_b64:
+            contenu_user = [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_b64,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": mensaje.strip() or (
+                        "Voici un document PDF. Si c'est une ordonnance optique, lis attentivement "
+                        "et extrais les valeurs présentes : OD (Sph/Cyl/Axe), OG (Sph/Cyl/Axe), "
+                        "Addition, DIP. N'invente aucune valeur absente. Demande confirmation "
+                        "avant toute commande."
+                    ),
+                },
+            ]
+            mensajes.append({"role": "user", "content": contenu_user})
+        else:
+            mensajes.append({
+                "role": "user",
+                "content": mensaje.strip() or "J'ai reçu un PDF mais je n'arrive pas à l'ouvrir. Peux-tu le renvoyer ?",
+            })
+    elif imagen_url:
         img = await _telecharger_image_base64(imagen_url)
         if img:
             b64, media_type = img
