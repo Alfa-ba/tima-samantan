@@ -78,6 +78,18 @@ class ProveedorUltraMsg(ProveedorWhatsApp):
                 mensaje_id=msg_id,
                 es_propio=False,
             ))
+        elif msg_type == "image":
+            # Message avec image (ex: photo d'ordonnance) — UltraMsg met l'URL dans 'media'
+            media_url = data.get("media", "") or data.get("body", "")
+            caption = data.get("caption", "")
+            logger.info(f"Image reçue de {telefono} : {media_url[:80]}")
+            mensajes.append(MensajeEntrante(
+                telefono=telefono,
+                texto=caption,  # légende éventuelle
+                mensaje_id=msg_id,
+                es_propio=False,
+                imagen_url=media_url,
+            ))
         elif msg_type in ["ptt", "audio"]:
             # Message vocal — pas de transcription UltraMsg pour l'instant
             logger.info(f"Message vocal reçu de {telefono} (non transcrit)")

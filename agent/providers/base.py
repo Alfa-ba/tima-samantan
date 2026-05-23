@@ -12,6 +12,7 @@ class MensajeEntrante:
     texto: str
     mensaje_id: str
     es_propio: bool
+    imagen_url: str = ""  # URL de l'image si le message en contient une (ordonnance, etc.)
 
 
 class ProveedorWhatsApp(ABC):

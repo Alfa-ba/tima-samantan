@@ -272,7 +272,43 @@ def _chercher_prix_opticien(nom_opticien: str) -> str:
         return "Impossible de lire les prix pour l'instant."
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict], telefono: str = "") -> str:
+async def _telecharger_image_base64(url: str) -> tuple[str, str] | None:
+    """
+    Télécharge une image depuis une URL et retourne (base64, media_type).
+    Retourne None si échec.
+    """
+    import base64
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            r = await http.get(url)
+            if r.status_code != 200:
+                logger.warning(f"Image inaccessible : HTTP {r.status_code}")
+                return None
+            content_type = r.headers.get("content-type", "image/jpeg")
+            # Normaliser le media_type pour Claude
+            if "png" in content_type:
+                media_type = "image/png"
+            elif "webp" in content_type:
+                media_type = "image/webp"
+            elif "gif" in content_type:
+                media_type = "image/gif"
+            else:
+                media_type = "image/jpeg"
+            b64 = base64.standard_b64encode(r.content).decode("utf-8")
+            logger.info(f"Image téléchargée : {len(r.content)} bytes ({media_type})")
+            return b64, media_type
+    except Exception as e:
+        logger.warning(f"Erreur téléchargement image : {e}")
+        return None
+
+
+async def generar_respuesta(
+    mensaje: str,
+    historial: list[dict],
+    telefono: str = "",
+    imagen_url: str = "",
+) -> str:
     """
     Génère une réponse avec l'API Claude.
     Si le client pose une question sur les produits, Claude appelle automatiquement
@@ -285,7 +321,8 @@ async def generar_respuesta(mensaje: str, historial: list[dict], telefono: str =
     Returns:
         Réponse générée par Claude
     """
-    if not mensaje or len(mensaje.strip()) < 2:
+    # Si pas d'image et message trop court → fallback
+    if not imagen_url and (not mensaje or len(mensaje.strip()) < 2):
         return obtener_mensaje_fallback()
 
     # ── Identification de l'utilisateur ────────────────────────────────────────
@@ -327,7 +364,40 @@ async def generar_respuesta(mensaje: str, historial: list[dict], telefono: str =
     mensajes = []
     for msg in historial:
         mensajes.append({"role": msg["role"], "content": msg["content"]})
-    mensajes.append({"role": "user", "content": mensaje})
+
+    # ── Construction du message courant (avec image si présente) ───────────────
+    if imagen_url:
+        img = await _telecharger_image_base64(imagen_url)
+        if img:
+            b64, media_type = img
+            contenu_user = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": b64,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": mensaje.strip() or (
+                        "Voici une photo. Si c'est une ordonnance optique, lis attentivement "
+                        "et extrais les valeurs : OD (Sph/Cyl/Axe), OG (Sph/Cyl/Axe), "
+                        "Addition, DIP, hauteur. Présente-les clairement et demande "
+                        "confirmation avant toute commande."
+                    ),
+                },
+            ]
+            mensajes.append({"role": "user", "content": contenu_user})
+        else:
+            # Échec téléchargement image → traiter comme texte seul
+            mensajes.append({
+                "role": "user",
+                "content": mensaje.strip() or "J'ai reçu une image mais je n'arrive pas à l'ouvrir. Peux-tu la renvoyer ?",
+            })
+    else:
+        mensajes.append({"role": "user", "content": mensaje})
 
     try:
         # ── Appel Claude avec outils (boucle multi-tours) ──────────────────

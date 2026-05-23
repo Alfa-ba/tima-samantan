@@ -7,9 +7,21 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 
-from agent.brain import generar_respuesta
+from agent.brain import generar_respuesta, obtener_mensaje_error
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
+
+
+async def _alerter_admin(message: str) -> None:
+    """Envoie une alerte WhatsApp au numéro admin si configuré (monitoring)."""
+    admin_phone = os.getenv("ADMIN_PHONE", "")
+    if not admin_phone:
+        return
+    try:
+        await proveedor.enviar_mensaje(admin_phone, f"🔔 ALERTE TIMA\n\n{message}")
+        logger.info(f"Alerte admin envoyée à {admin_phone}")
+    except Exception as e:
+        logger.error(f"Échec envoi alerte admin : {e}")
 
 load_dotenv(override=True)
 
@@ -31,6 +43,9 @@ async def lifespan(app: FastAPI):
 
     # ── Tâches de démarrage en arrière-plan (sans bloquer le démarrage) ─────────
     import asyncio
+
+    # Alerte admin : Tima est en ligne
+    asyncio.create_task(_alerter_admin("✅ Tima est en ligne et opérationnelle."))
 
     async def _scraper_background():
         try:
@@ -937,15 +952,31 @@ async def _traiter_message(msg, prov) -> None:
             logger.info(f"Message SAMANTAN ignoré : '{msg.texto[:60]}'")
             return
 
-        logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
+        imagen = getattr(msg, "imagen_url", "")
+        if imagen:
+            logger.info(f"Traitement IMAGE de {msg.telefono} (légende: '{msg.texto[:40]}')")
+        else:
+            logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
+
         historial = await obtener_historial(msg.telefono)
-        respuesta = await generar_respuesta(msg.texto, historial, telefono=msg.telefono)
-        await guardar_mensaje(msg.telefono, "user", msg.texto)
+        respuesta = await generar_respuesta(
+            msg.texto, historial, telefono=msg.telefono, imagen_url=imagen
+        )
+
+        # Sauvegarde : pour une image, noter [photo] dans l'historique
+        texte_a_sauver = msg.texto or ("[photo envoyée]" if imagen else "")
+        await guardar_mensaje(msg.telefono, "user", texte_a_sauver)
         await guardar_mensaje(msg.telefono, "assistant", respuesta)
         await prov.enviar_mensaje(msg.telefono, respuesta)
         logger.info(f"Réponse envoyée à {msg.telefono} : {respuesta[:80]}...")
     except Exception as e:
         logger.error(f"Erreur traitement message {msg.telefono} : {e}")
+        await _alerter_admin(f"Erreur traitement message de {msg.telefono} : {type(e).__name__}: {e}")
+        # Message d'excuse au client pour ne pas le laisser sans réponse
+        try:
+            await prov.enviar_mensaje(msg.telefono, obtener_mensaje_error())
+        except Exception:
+            pass
 
 
 @app.post("/webhook")
@@ -961,7 +992,8 @@ async def webhook_handler(request: Request):
         mensajes = await proveedor.parsear_webhook(request)
 
         for msg in mensajes:
-            if msg.es_propio or not msg.texto:
+            # Ignorer nos propres messages, ou messages vides SANS image
+            if msg.es_propio or (not msg.texto and not getattr(msg, "imagen_url", "")):
                 continue
 
             # ── Déduplication : ignorer si déjà traité ─────────────────────────
