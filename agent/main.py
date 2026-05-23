@@ -1005,8 +1005,9 @@ async def _traiter_message(msg, prov) -> None:
 
         imagen = getattr(msg, "imagen_url", "")
         documento = getattr(msg, "documento_url", "")
+        doc_nombre = getattr(msg, "documento_nombre", "")
         if documento:
-            logger.info(f"Traitement PDF de {msg.telefono} (légende: '{msg.texto[:40]}')")
+            logger.info(f"Traitement DOCUMENT de {msg.telefono} : {doc_nombre}")
         elif imagen:
             logger.info(f"Traitement IMAGE de {msg.telefono} (légende: '{msg.texto[:40]}')")
         else:
@@ -1015,7 +1016,7 @@ async def _traiter_message(msg, prov) -> None:
         historial = await obtener_historial(msg.telefono)
         respuesta = await generar_respuesta(
             msg.texto, historial, telefono=msg.telefono,
-            imagen_url=imagen, documento_url=documento,
+            imagen_url=imagen, documento_url=documento, documento_nombre=doc_nombre,
         )
 
         # Sauvegarde : noter le type de média dans l'historique

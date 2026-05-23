@@ -120,6 +120,7 @@ class ProveedorUltraMsg(ProveedorWhatsApp):
                     mensaje_id=msg_id,
                     es_propio=False,
                     documento_url=media_url,
+                    documento_nombre=filename,
                 ))
             else:
                 logger.info(f"Document non supporté ignoré : {filename}")

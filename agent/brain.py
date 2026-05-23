@@ -367,6 +367,7 @@ async def generar_respuesta(
     telefono: str = "",
     imagen_url: str = "",
     documento_url: str = "",
+    documento_nombre: str = "",
 ) -> str:
     """
     Génère une réponse avec l'API Claude.
@@ -426,7 +427,9 @@ async def generar_respuesta(
 
     # ── Construction du message courant (document, puis image) ────────────────
     if documento_url:
-        url_lower = documento_url.lower()
+        # Détecter le type via le NOM de fichier (l'URL S3 n'a pas d'extension),
+        # avec fallback sur l'URL au cas où.
+        url_lower = (documento_nombre + " " + documento_url).lower()
         consigne_ordonnance = (
             "Si c'est une ordonnance optique, lis attentivement et extrais les valeurs "
             "présentes : OD (Sph/Cyl/Axe), OG (Sph/Cyl/Axe), Addition, DIP. "

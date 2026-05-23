@@ -12,8 +12,9 @@ class MensajeEntrante:
     texto: str
     mensaje_id: str
     es_propio: bool
-    imagen_url: str = ""      # URL de l'image si le message en contient une (ordonnance, etc.)
-    documento_url: str = ""   # URL du document (PDF) si le message en contient un
+    imagen_url: str = ""        # URL de l'image si le message en contient une (ordonnance, etc.)
+    documento_url: str = ""     # URL du document (PDF/Word/Excel) si présent
+    documento_nombre: str = ""  # Nom du fichier (avec extension) pour détecter le type
 
 
 class ProveedorWhatsApp(ABC):
