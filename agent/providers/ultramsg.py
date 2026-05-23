@@ -64,10 +64,15 @@ class ProveedorUltraMsg(ProveedorWhatsApp):
         msg_id   = data.get("id", "")
         msg_body = data.get("body", "").strip()
 
-        # Normaliser le numéro : "221XXXXXXXX@c.us" → "221XXXXXXXX"
-        telefono = msg_from.split("@")[0] if "@" in msg_from else msg_from
-
         es_propio = bool(data.get("fromMe") or data.get("from_me"))
+
+        # Pour les messages SORTANTS (fromMe) : le client est dans "to", pas "from"
+        # Pour les messages ENTRANTS : le client est dans "from"
+        if es_propio:
+            msg_to = data.get("to", "")
+            telefono = msg_to.split("@")[0] if "@" in msg_to else msg_to
+        else:
+            telefono = msg_from.split("@")[0] if "@" in msg_from else msg_from
 
         if msg_type == "chat" and msg_body:
             mensajes.append(MensajeEntrante(
