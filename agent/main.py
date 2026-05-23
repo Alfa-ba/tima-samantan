@@ -357,25 +357,27 @@ async def debug():
 
 
 @app.get("/test-claude-direct")
-async def test_claude_direct():
-    """Test minimal de l'API Claude — sans system prompt, sans outils, sans knowledge."""
+async def test_claude_direct(model: str = "claude-3-5-haiku-20241022"):
+    """Test minimal de l'API Claude — teste le modèle passé en paramètre."""
     import anthropic
     key = os.getenv("ANTHROPIC_API_KEY", "")
     try:
         c = anthropic.AsyncAnthropic(api_key=key)
         r = await c.messages.create(
-            model="claude-sonnet-4-6",
+            model=model,
             max_tokens=100,
             messages=[{"role": "user", "content": "Dis juste: OK"}]
         )
         return {
             "status": "ok",
+            "model": model,
             "reponse": r.content[0].text if r.content else "",
             "key_debut": key[:20] + "...",
         }
     except Exception as e:
         return {
             "status": "erreur",
+            "model": model,
             "type": type(e).__name__,
             "message": str(e),
             "key_debut": key[:20] + "...",
