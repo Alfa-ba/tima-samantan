@@ -384,6 +384,28 @@ async def test_claude_direct(model: str = "claude-3-5-haiku-20241022"):
         }
 
 
+@app.get("/test-claude-full")
+async def test_claude_full():
+    """Reproduit l'appel exact de generar_respuesta (system+cache+tools+Haiku) sans masquer l'erreur."""
+    import anthropic
+    from agent.brain import cargar_system_prompt, TOOLS
+    key = os.getenv("ANTHROPIC_API_KEY", "")
+    try:
+        c = anthropic.AsyncAnthropic(api_key=key)
+        sp = cargar_system_prompt()
+        r = await c.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            system=[{"type": "text", "text": sp, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": "Salut"}],
+            tools=TOOLS
+        )
+        txt = next((b.text for b in r.content if getattr(b, "type", "") == "text"), "")
+        return {"status": "ok", "stop_reason": r.stop_reason, "reponse": txt[:300]}
+    except Exception as e:
+        return {"status": "erreur", "type": type(e).__name__, "message": str(e)}
+
+
 @app.get("/test-tima")
 async def test_tima(message: str = "Bonjour, quels sont vos progressifs ?"):
     """
