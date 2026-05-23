@@ -918,6 +918,23 @@ async def simuler_prix():
         return {"erreur": str(e)}
 
 
+@app.get("/debug-webhooks")
+async def debug_webhooks():
+    """
+    Affiche les 10 derniers payloads bruts reçus d'UltraMsg.
+    Sert à diagnostiquer le format exact des messages (images, vocaux, etc.).
+    Envoie une photo sur WhatsApp puis ouvre cette page pour voir sa structure.
+    """
+    try:
+        from agent.providers.ultramsg import DERNIERS_WEBHOOKS
+        return {
+            "total_captures": len(DERNIERS_WEBHOOKS),
+            "webhooks": DERNIERS_WEBHOOKS,
+        }
+    except Exception as e:
+        return {"erreur": str(e)}
+
+
 @app.get("/webhook")
 async def webhook_verificacion(request: Request):
     """Vérification GET du webhook (requis par Meta, no-op pour Twilio)."""

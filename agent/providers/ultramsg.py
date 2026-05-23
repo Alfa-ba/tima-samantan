@@ -9,6 +9,9 @@ from agent.providers.base import ProveedorWhatsApp, MensajeEntrante
 
 logger = logging.getLogger("agentkit")
 
+# Debug : stocke les derniers payloads bruts pour diagnostic (/debug-webhooks)
+DERNIERS_WEBHOOKS: list = []
+
 
 class ProveedorUltraMsg(ProveedorWhatsApp):
     """
@@ -48,6 +51,14 @@ class ProveedorUltraMsg(ProveedorWhatsApp):
             except Exception as e:
                 logger.warning(f"UltraMsg payload illisible : {e}")
                 return []
+
+        # ── Debug : garder les 10 derniers payloads bruts ─────────────────────
+        try:
+            DERNIERS_WEBHOOKS.append(body)
+            if len(DERNIERS_WEBHOOKS) > 10:
+                DERNIERS_WEBHOOKS.pop(0)
+        except Exception:
+            pass
 
         event_type = body.get("event_type", "")
 
