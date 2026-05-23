@@ -888,6 +888,9 @@ async def webhook_verificacion(request: Request):
 # ── Déduplication des messages (évite les doublons Meta) ──────────────────────
 _messages_traites: set = set()
 
+# ── Conversations en pause (#) / actives (@) ───────────────────────────────────
+_conversations_en_pause: set[str] = set()
+
 
 import re as _re
 
@@ -934,10 +937,23 @@ async def _traiter_message(msg, prov) -> None:
     try:
         # ── Ignorer les messages SAMANTAN → clients (notifications auto) ─────────
         if _est_message_samantan(msg.texto):
-            logger.info(
-                f"Message SAMANTAN ignoré (notification auto) "
-                f"de {msg.telefono} : '{msg.texto[:60]}'"
-            )
+            logger.info(f"Message SAMANTAN ignoré : '{msg.texto[:60]}'")
+            return
+
+        # ── Commandes # (pause) et @ (reprise) ────────────────────────────────
+        texte_net = msg.texto.strip()
+        if texte_net == "#":
+            _conversations_en_pause.add(msg.telefono)
+            logger.info(f"⏸️ Tima en pause pour {msg.telefono}")
+            return  # Silence — pas de réponse
+        if texte_net == "@":
+            _conversations_en_pause.discard(msg.telefono)
+            logger.info(f"✅ Tima reprend pour {msg.telefono}")
+            return  # Silence — pas de réponse
+
+        # ── Tima en pause pour ce numéro → silence ─────────────────────────────
+        if msg.telefono in _conversations_en_pause:
+            logger.info(f"⏸️ Tima silencieuse pour {msg.telefono}")
             return
 
         logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
