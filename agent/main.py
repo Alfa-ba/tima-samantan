@@ -975,13 +975,6 @@ async def webhook_handler(request: Request):
                     plus_vieux = next(iter(_messages_traites))
                     _messages_traites.discard(plus_vieux)
 
-            # ── Vérifier si Tima est en pause pour ce client (relais humain) ───
-            if _conversations_humain.get(msg.telefono):
-                logger.info(
-                    f"⏸️  Tima en pause pour {msg.telefono} — relais humain actif"
-                )
-                continue
-
             # ── Traitement en arrière-plan → Meta reçoit 200 en < 1 seconde ───
             asyncio.create_task(_traiter_message(msg, proveedor))
 
