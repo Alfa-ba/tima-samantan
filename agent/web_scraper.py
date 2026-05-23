@@ -499,13 +499,13 @@ async def _fetch_catalogue_raw() -> str:
             return "Aucun produit actif trouvé sur samantan.net"
 
         # ── Étape 4 : Formater la liste ────────────────────────────────────
+        # NB : on n'inclut PAS le prix de base — les prix donnés aux opticiens
+        # sont leurs prix personnalisés (via l'outil consulter_prix_opticien).
         lignes_resultat = [f"[{len(produits)} PRODUITS ACTIFS — SAMANTAN]\n"]
         for p in produits:
             ligne_prod = f"• {p['nom']}"
             if p['ref']:
                 ligne_prod += f" (Réf: {p['ref']})"
-            if p['prix']:
-                ligne_prod += f" — Prix base: {p['prix']} FCFA"
             if p['traitements']:
                 ligne_prod += f"\n  Traitements dispo: {p['traitements']}"
             lignes_resultat.append(ligne_prod)
