@@ -17,5 +17,8 @@ def obtener_proveedor() -> ProveedorWhatsApp:
     elif proveedor == "twilio":
         from agent.providers.twilio import ProveedorTwilio
         return ProveedorTwilio()
+    elif proveedor == "ultramsg":
+        from agent.providers.ultramsg import ProveedorUltraMsg
+        return ProveedorUltraMsg()
     else:
-        raise ValueError(f"Fournisseur non supporté : {proveedor}. Utilisez : meta ou twilio")
+        raise ValueError(f"Fournisseur non supporté : {proveedor}. Utilisez : meta, twilio ou ultramsg")
