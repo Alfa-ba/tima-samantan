@@ -139,7 +139,15 @@ def cargar_knowledge() -> str:
     return "\n".join(contenus)
 
 
+# ── Cache du system prompt en mémoire (recalculé uniquement si les fichiers changent) ──
+_system_prompt_cache: str | None = None
+
+
 def cargar_system_prompt() -> str:
+    global _system_prompt_cache
+    if _system_prompt_cache is not None:
+        return _system_prompt_cache
+
     config = cargar_config_prompts()
     system_prompt = config.get(
         "system_prompt",
@@ -155,7 +163,16 @@ def cargar_system_prompt() -> str:
             f"{knowledge}"
         )
 
+    _system_prompt_cache = system_prompt
+    logger.info(f"System prompt mis en cache ({len(system_prompt)} chars)")
     return system_prompt
+
+
+def invalider_cache_system_prompt():
+    """Invalide le cache du system prompt (appeler après une mise à jour des knowledge files)."""
+    global _system_prompt_cache
+    _system_prompt_cache = None
+    logger.info("Cache system prompt invalidé")
 
 
 def obtener_mensaje_error() -> str:
@@ -266,10 +283,20 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         messages_en_cours = mensajes[:]
         MAX_TOURS = 5  # sécurité anti-boucle infinie
 
+        # Prompt caching Anthropic : le system prompt est mis en cache côté serveur
+        # → -90% sur les tokens d'entrée après le 1er appel (cache valide 5 minutes)
+        system_avec_cache = [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+
         response = await client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=system_prompt,
+            system=system_avec_cache,
             messages=messages_en_cours,
             tools=TOOLS
         )
@@ -314,11 +341,11 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
                 {"role": "user", "content": tool_results}
             ]
 
-            # Appel suivant avec les résultats des outils
+            # Appel suivant avec les résultats des outils (cache system prompt réutilisé)
             response = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
-                system=system_prompt,
+                system=system_avec_cache,
                 messages=messages_en_cours,
                 tools=TOOLS
             )

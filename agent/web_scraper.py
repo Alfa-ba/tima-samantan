@@ -615,6 +615,12 @@ async def prechauffer_catalogue() -> None:
                 encoding="utf-8"
             )
             logger.info(f"Catalogue mémorisé dans {catalogue_file} ✓")
+            # Invalider le cache system prompt pour intégrer le nouveau catalogue
+            try:
+                from agent.brain import invalider_cache_system_prompt
+                invalider_cache_system_prompt()
+            except Exception:
+                pass
         else:
             logger.warning(
                 f"Préchauffage catalogue : résultat trop court "
