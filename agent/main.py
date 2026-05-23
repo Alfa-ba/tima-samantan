@@ -926,9 +926,6 @@ def _est_message_broadcast(texte: str) -> bool:
         "ordonnances ci-dessous",
         "références ci-dessous",
         "l'équipe samantan",
-        "n'hésitez pas à nous contacter 77",
-        "76 133 35 33",
-        "77 543 48 16",
     ]
     if any(m in texte_lower for m in marqueurs_auto):
         return True
