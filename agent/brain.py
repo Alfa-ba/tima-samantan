@@ -343,7 +343,7 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
 
             # Appel suivant avec les résultats des outils (cache system prompt réutilisé)
             response = await client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5",
                 max_tokens=1024,
                 system=system_avec_cache,
                 messages=messages_en_cours,
@@ -357,6 +357,5 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         return respuesta
 
     except Exception as e:
-        import traceback
-        logger.error(f"Erreur API Claude : {type(e).__name__}: {e}\n{traceback.format_exc()}")
-        return f"[DEBUG {type(e).__name__}] {e}"
+        logger.error(f"Erreur API Claude : {type(e).__name__}: {e}")
+        return obtener_mensaje_error()
