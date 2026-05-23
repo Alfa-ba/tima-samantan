@@ -888,6 +888,12 @@ async def webhook_verificacion(request: Request):
 # ── Déduplication des messages (évite les doublons Meta) ──────────────────────
 _messages_traites: set = set()
 
+# ── Relais humain — conversations en pause (gérées par l'équipe SAMANTAN) ─────
+# Clé : numéro du client | Valeur : True = humain aux commandes, Tima en pause
+_conversations_humain: dict[str, bool] = {}
+
+SIGNAL_REPRISE = "#"  # L'équipe envoie "#" pour rendre le relais à Tima
+
 
 import re as _re
 
@@ -964,8 +970,29 @@ async def webhook_handler(request: Request):
         mensajes = await proveedor.parsear_webhook(request)
 
         for msg in mensajes:
-            if msg.es_propio or not msg.texto:
+            if not msg.texto:
                 continue
+
+            # ── Messages envoyés PAR l'équipe SAMANTAN (fromMe) ───────────────
+            if msg.es_propio:
+                texte_net = msg.texto.strip()
+
+                if texte_net == SIGNAL_REPRISE:
+                    # "#" → Tima reprend le relais pour ce client
+                    if msg.telefono in _conversations_humain:
+                        del _conversations_humain[msg.telefono]
+                        logger.info(f"✅ Relais rendu à Tima — {msg.telefono}")
+                    else:
+                        logger.info(f"# reçu mais {msg.telefono} n'était pas en pause")
+                else:
+                    # Tout autre message de l'équipe → pause Tima pour ce client
+                    if msg.telefono not in _conversations_humain:
+                        _conversations_humain[msg.telefono] = True
+                        logger.info(
+                            f"⏸️  Relais humain activé pour {msg.telefono} "
+                            f"— Tima en pause. Envoyer '#' pour reprendre."
+                        )
+                continue  # Ne pas traiter les messages de l'équipe comme client
 
             # ── Déduplication : ignorer si déjà traité ─────────────────────────
             if msg.mensaje_id and msg.mensaje_id in _messages_traites:
@@ -974,10 +1001,17 @@ async def webhook_handler(request: Request):
 
             if msg.mensaje_id:
                 _messages_traites.add(msg.mensaje_id)
-                # Garder seulement les 500 derniers IDs en mémoire
                 if len(_messages_traites) > 500:
                     plus_vieux = next(iter(_messages_traites))
                     _messages_traites.discard(plus_vieux)
+
+            # ── Vérifier si Tima est en pause pour ce client ───────────────────
+            if _conversations_humain.get(msg.telefono):
+                logger.info(
+                    f"⏸️  Tima en pause pour {msg.telefono} "
+                    f"— message ignoré (relais humain actif)"
+                )
+                continue
 
             # ── Traitement en arrière-plan → Meta reçoit 200 en < 1 seconde ───
             asyncio.create_task(_traiter_message(msg, proveedor))
