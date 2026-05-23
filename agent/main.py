@@ -893,20 +893,52 @@ import re as _re
 
 def _est_message_broadcast(texte: str) -> bool:
     """
-    Détecte les messages broadcast du type "Bonjour [NOM OPTICIEN]"
-    que Tima doit ignorer silencieusement (sans répondre).
+    Détecte les messages automatiques SAMANTAN que Tima doit ignorer silencieusement.
 
-    Exemples ignorés :
-      "Bonjour OPTIQUE PONTY"
-      "Bonjour Junior Optique,"
-      "Bonjour Cher client"
+    Exemples ignorés (notifications automatiques) :
+      "Bonjour YELETA OPTIC, Vos 4 ordonnances..."
+      "Bonjour, Les 8 ordonnances ci-dessous ont été mis à l'état transmis au labo..."
+      "Bonjour OPTIQUE PONTY" (message vide)
+      Tout message contenant des références ORD-XXXXX
+      Tout message se terminant par "SAMANTAN vous remercie."
     """
     if not texte:
         return False
     texte_strip = texte.strip()
-    # Commence par "Bonjour" suivi d'un nom (maj, tiret, virgule tolérés)
-    pattern = r'^[Bb]onjour[\s,]+[A-ZÀÂÇÉÈÊËÎÏÔÛÙÜŸÆŒ][A-Za-zÀ-ÿ\s\-\'\.]{1,60}[,.]?\s*$'
-    return bool(_re.match(pattern, texte_strip))
+    texte_lower = texte_strip.lower()
+
+    # ── Règle 1 : contient une référence d'ordonnance ORD-XXXXX ───────────────
+    if _re.search(r'\bORD-[A-Z0-9]{4,}\b', texte_strip):
+        return True
+
+    # ── Règle 2 : se termine par "SAMANTAN vous remercie" ─────────────────────
+    if "samantan vous remercie" in texte_lower:
+        return True
+
+    # ── Règle 3 : contient des marqueurs de notifications automatiques ─────────
+    marqueurs_auto = [
+        "transmis au labo",
+        "arrivées dans nos locaux",
+        "arriveront à dakar",
+        "à livrer dans la journée",
+        "prendre en charge",
+        "merci de prendre en charge",
+        "ordonnances ci-dessous",
+        "références ci-dessous",
+        "l'équipe samantan",
+        "n'hésitez pas à nous contacter 77",
+        "76 133 35 33",
+        "77 543 48 16",
+    ]
+    if any(m in texte_lower for m in marqueurs_auto):
+        return True
+
+    # ── Règle 4 : "Bonjour [NOM]" seul (sans question ni contenu) ─────────────
+    pattern_bonjour_seul = r'^[Bb]onjour[\s,]+[A-ZÀÂÇÉÈÊËÎÏÔÛÙÜŸÆŒ][A-Za-zÀ-ÿ\s\-\'\.]{1,60}[,.]?\s*$'
+    if _re.match(pattern_bonjour_seul, texte_strip):
+        return True
+
+    return False
 
 
 async def _traiter_message(msg, prov) -> None:
