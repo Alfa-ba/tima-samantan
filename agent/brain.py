@@ -294,7 +294,7 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         ]
 
         response = await client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             max_tokens=1024,
             system=system_avec_cache,
             messages=messages_en_cours,
