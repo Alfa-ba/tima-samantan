@@ -945,11 +945,12 @@ async def _traiter_message(msg, prov) -> None:
         if texte_net == "#":
             _conversations_en_pause.add(msg.telefono)
             logger.info(f"⏸️ Tima en pause pour {msg.telefono}")
-            return  # Silence — pas de réponse
+            return  # Silence total
         if texte_net == "@":
             _conversations_en_pause.discard(msg.telefono)
             logger.info(f"✅ Tima reprend pour {msg.telefono}")
-            return  # Silence — pas de réponse
+            await prov.enviar_mensaje(msg.telefono, "Je reprends ! Comment puis-je vous aider ?")
+            return
 
         # ── Tima en pause pour ce numéro → silence ─────────────────────────────
         if msg.telefono in _conversations_en_pause:
