@@ -12,6 +12,23 @@ logger = logging.getLogger("agentkit")
 
 client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
+# ── Modèle actif (basculé dynamiquement par le scheduler) ─────────────────────
+# Par défaut : Haiku 4.5 (économique)
+# À 2h AM → Sonnet 4.6 (mises à jour SAMANTAN)
+# À 2h30 AM → retour Haiku 4.5
+_MODELE_PAR_DEFAUT = "claude-haiku-4-5"
+
+
+def get_modele_actif() -> str:
+    """Retourne le modèle Claude actuellement actif pour Tima."""
+    return os.getenv("TIMA_MODEL", _MODELE_PAR_DEFAUT)
+
+
+def set_modele(modele: str) -> None:
+    """Change le modèle actif de Tima (appelé par le scheduler)."""
+    os.environ["TIMA_MODEL"] = modele
+    logger.info(f"Modèle Tima basculé → {modele}")
+
 # ── Outil : accès au catalogue SAMANTAN ───────────────────────────────────────
 TOOLS = [
     {
@@ -255,7 +272,7 @@ def _chercher_prix_opticien(nom_opticien: str) -> str:
         return "Impossible de lire les prix pour l'instant."
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
+async def generar_respuesta(mensaje: str, historial: list[dict], telefono: str = "") -> str:
     """
     Génère une réponse avec l'API Claude.
     Si le client pose une question sur les produits, Claude appelle automatiquement
@@ -271,7 +288,41 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     if not mensaje or len(mensaje.strip()) < 2:
         return obtener_mensaje_fallback()
 
+    # ── Identification de l'utilisateur ────────────────────────────────────────
+    utilisateur_info = ""
+    if telefono:
+        try:
+            from agent.web_scraper import identifier_utilisateur
+            utilisateur = identifier_utilisateur(telefono)
+            if utilisateur:
+                nom = utilisateur.get("nom", "")
+                role = utilisateur.get("role", "opticien")
+                utilisateur_info = (
+                    f"\n\n## Utilisateur identifié\n"
+                    f"- Nom : {nom}\n"
+                    f"- Téléphone : {telefono}\n"
+                    f"- Rôle : {role}\n"
+                    f"- ⚠️ RÈGLE ABSOLUE : Ne jamais divulguer les informations "
+                    f"d'autres clients/opticiens à cet utilisateur. "
+                    f"Quand il demande ses prix, ne montrer QUE les prix de '{nom}'."
+                )
+                logger.info(f"Utilisateur identifié : {nom} ({role}) — {telefono}")
+            else:
+                # Utilisateur non reconnu — accès limité
+                utilisateur_info = (
+                    f"\n\n## Utilisateur non identifié\n"
+                    f"- Téléphone : {telefono}\n"
+                    f"- ⚠️ Cet utilisateur n'est pas dans la liste des collaborateurs SAMANTAN. "
+                    f"Ne pas divulguer d'informations confidentielles (prix, ordonnances, clients). "
+                    f"Répondre uniquement aux questions générales sur SAMANTAN."
+                )
+                logger.info(f"Utilisateur non reconnu : {telefono}")
+        except Exception as e:
+            logger.warning(f"Erreur identification utilisateur {telefono} : {e}")
+
     system_prompt = cargar_system_prompt()
+    if utilisateur_info:
+        system_prompt = system_prompt + utilisateur_info
 
     mensajes = []
     for msg in historial:
@@ -293,8 +344,11 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
             }
         ]
 
+        modele = get_modele_actif()
+        logger.info(f"Modèle actif : {modele}")
+
         response = await client.messages.create(
-            model="claude-haiku-4-5",
+            model=modele,
             max_tokens=1024,
             system=system_avec_cache,
             messages=messages_en_cours,
@@ -343,7 +397,7 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
 
             # Appel suivant avec les résultats des outils (cache system prompt réutilisé)
             response = await client.messages.create(
-                model="claude-haiku-4-5",
+                model=modele,
                 max_tokens=1024,
                 system=system_avec_cache,
                 messages=messages_en_cours,

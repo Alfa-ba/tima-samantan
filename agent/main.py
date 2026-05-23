@@ -67,22 +67,6 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_prechauffer_catalogue())
     asyncio.create_task(_scraper_pages())
 
-    async def _rafraichir_catalogue_24h():
-        """Rafraîchit le catalogue toutes les 24h en arrière-plan."""
-        while True:
-            await asyncio.sleep(24 * 60 * 60)  # attendre 24h
-            logger.info("Rafraîchissement catalogue SAMANTAN (cycle 24h)...")
-            try:
-                from agent.web_scraper import prechauffer_catalogue
-                await asyncio.wait_for(prechauffer_catalogue(), timeout=120.0)
-                logger.info("Catalogue rafraîchi ✓")
-            except asyncio.TimeoutError:
-                logger.warning("Rafraîchissement catalogue timeout — prochain cycle dans 24h")
-            except Exception as e:
-                logger.warning(f"Rafraîchissement catalogue échoué : {e}")
-
-    asyncio.create_task(_rafraichir_catalogue_24h())
-
     async def _scraper_prix_background():
         """Scrape les prix opticiens au démarrage (après les autres tâches)."""
         try:
@@ -97,13 +81,17 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_scraper_prix_background())
 
-    async def _rafraichir_prix_2h_quotidien():
+    async def _maintenance_2h_quotidienne():
         """
-        Rafraîchit les prix de tous les opticiens tous les jours à 2h du matin.
+        Maintenance quotidienne à 2h du matin (UTC = heure Dakar) :
+          1. Bascule Tima sur claude-sonnet-4-6 (plus puissant pour les mises à jour)
+          2. Rafraîchit : catalogue, prix opticiens, pages SAMANTAN, collaborateurs
+          3. À 2h30 → retour à claude-haiku-4-5 (économique pour les conversations)
+
         (Dakar = UTC+0, donc 2h local = 2h UTC sur Railway)
-        Permet de capter les nouveaux clients et changements de tarifs.
         """
         from datetime import datetime, timedelta
+        from agent.brain import set_modele
 
         while True:
             # ── Calculer le temps jusqu'au prochain 2h00 ──────────────────────
@@ -116,24 +104,80 @@ async def lifespan(app: FastAPI):
             h = int(attente_sec // 3600)
             m = int((attente_sec % 3600) // 60)
             logger.info(
-                f"Prochain rafraîchissement prix opticiens : "
+                f"Prochaine maintenance Tima : "
                 f"{prochain_2h.strftime('%Y-%m-%d %H:%M')} UTC "
                 f"(dans {h}h{m:02d}min)"
             )
 
             await asyncio.sleep(attente_sec)
 
-            # ── Rafraîchissement à 2h ──────────────────────────────────────────
-            logger.info("=== Rafraîchissement prix opticiens 2h00 UTC ===")
+            # ══════════════════════════════════════════════════════════════════
+            # 2h00 UTC — DÉBUT MAINTENANCE
+            # ══════════════════════════════════════════════════════════════════
+            logger.info("=== MAINTENANCE 2h00 UTC — Tima passe en mode Sonnet 4.6 ===")
+
+            # ── Étape 1 : Basculer sur Sonnet 4.6 ─────────────────────────────
+            set_modele("claude-sonnet-4-6")
+            logger.info("Modèle → claude-sonnet-4-6 ✓")
+
+            # ── Étape 2 : Rafraîchissement catalogue ──────────────────────────
+            try:
+                from agent.web_scraper import prechauffer_catalogue
+                logger.info("Rafraîchissement catalogue SAMANTAN...")
+                await asyncio.wait_for(prechauffer_catalogue(), timeout=120.0)
+                logger.info("Catalogue mis à jour ✓")
+            except Exception as e:
+                logger.warning(f"Catalogue 2h : {e}")
+
+            # ── Étape 3 : Rafraîchissement prix opticiens ─────────────────────
+            logger.info("Rafraîchissement prix opticiens...")
             try:
                 await asyncio.wait_for(_run_scraping_prix(limite=0), timeout=600.0)
-                logger.info("Prix opticiens mis à jour ✓ (cycle quotidien 2h)")
+                logger.info("Prix opticiens mis à jour ✓")
             except asyncio.TimeoutError:
-                logger.warning("Rafraîchissement prix 2h : timeout (10min) — réessai demain")
+                logger.warning("Rafraîchissement prix 2h : timeout (10min)")
             except Exception as e:
-                logger.warning(f"Rafraîchissement prix 2h : {e} — réessai demain")
+                logger.warning(f"Rafraîchissement prix 2h : {e}")
 
-    asyncio.create_task(_rafraichir_prix_2h_quotidien())
+            # ── Étape 4 : Pages SAMANTAN (ordonnances, réseau opticiens) ──────
+            try:
+                from agent.web_scraper import scraper_pages_samantan
+                logger.info("Rafraîchissement pages SAMANTAN...")
+                await asyncio.wait_for(scraper_pages_samantan(), timeout=90.0)
+                logger.info("Pages SAMANTAN mises à jour ✓")
+            except Exception as e:
+                logger.warning(f"Pages SAMANTAN 2h : {e}")
+
+            # ── Étape 5 : Collaborateurs / utilisateurs autorisés ─────────────
+            try:
+                from agent.web_scraper import scraper_collaborateurs
+                logger.info("Rafraîchissement liste collaborateurs...")
+                await asyncio.wait_for(scraper_collaborateurs(), timeout=60.0)
+                logger.info("Collaborateurs mis à jour ✓")
+            except Exception as e:
+                logger.warning(f"Collaborateurs 2h : {e}")
+
+            # ── Invalider le cache system prompt (nouvelles données chargées) ──
+            try:
+                from agent.brain import invalider_cache_system_prompt
+                invalider_cache_system_prompt()
+                logger.info("Cache system prompt invalidé ✓")
+            except Exception as e:
+                logger.warning(f"Invalidation cache : {e}")
+
+            logger.info("=== MAINTENANCE 2h00 UTC — Mises à jour terminées ===")
+
+            # ── Attendre 30 minutes avant de rebasculer sur Haiku ─────────────
+            logger.info("Attente 30 minutes avant retour Haiku 4.5...")
+            await asyncio.sleep(30 * 60)
+
+            # ══════════════════════════════════════════════════════════════════
+            # 2h30 UTC — RETOUR HAIKU 4.5
+            # ══════════════════════════════════════════════════════════════════
+            set_modele("claude-haiku-4-5")
+            logger.info("=== 2h30 UTC — Modèle → claude-haiku-4-5 (mode conversation) ✓ ===")
+
+    asyncio.create_task(_maintenance_2h_quotidienne())
 
     yield
 
@@ -850,7 +894,7 @@ async def _traiter_message(msg, prov) -> None:
     try:
         logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
         historial = await obtener_historial(msg.telefono)
-        respuesta = await generar_respuesta(msg.texto, historial)
+        respuesta = await generar_respuesta(msg.texto, historial, telefono=msg.telefono)
         await guardar_mensaje(msg.telefono, "user", msg.texto)
         await guardar_mensaje(msg.telefono, "assistant", respuesta)
         await prov.enviar_mensaje(msg.telefono, respuesta)

@@ -1198,6 +1198,186 @@ async def scraper_prix_opticiens(limite: int = 0) -> dict:
     }
 
 
+# ── Collaborateurs / utilisateurs autorisés SAMANTAN ──────────────────────────
+
+COLLABORATEURS_FILE = Path("knowledge/collaborateurs.json")
+
+
+async def scraper_collaborateurs() -> dict:
+    """
+    Récupère la liste des collaborateurs/opticiens autorisés depuis :
+      /collaborateurs-de-samantan
+
+    Sauvegarde dans knowledge/collaborateurs.json pour :
+      - Reconnaître les utilisateurs WhatsApp autorisés
+      - Isoler les données par opticien (chaque opticien voit SEULEMENT ses données)
+
+    Structure sauvegardée :
+      {
+        "opticiens": [
+          {"nom": "OPTIQUE PONTY", "telephone": "221XXXXXXXX", "email": "...", "id": "..."},
+          ...
+        ],
+        "admins": [...],
+        "mis_a_jour": "2026-05-23 02:00"
+      }
+    """
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+
+    logger.info("Scraping collaborateurs SAMANTAN...")
+    resultat = {"opticiens": [], "admins": [], "mis_a_jour": datetime.now().strftime("%Y-%m-%d %H:%M")}
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=30.0, headers=HEADERS) as client:
+
+        # ── Login ──────────────────────────────────────────────────────────────
+        await client.get(f"{SAMANTAN_URL}/connexion-samantan", timeout=10.0)
+        r_login = await client.post(
+            f"{SAMANTAN_URL}/connexion-samantan",
+            data={
+                "_method": "POST",
+                "data[User][email]": LOGIN_EMAIL,
+                "data[User][password]": LOGIN_PASSWORD,
+            },
+            timeout=15.0,
+        )
+        login_ok = r_login.status_code in [200, 302]
+        logger.info(f"Collaborateurs login : {r_login.status_code} | OK={login_ok}")
+
+        if not login_ok:
+            logger.warning("Scraping collaborateurs : login échoué")
+            return resultat
+
+        # ── GET page collaborateurs ────────────────────────────────────────────
+        try:
+            r = await client.get(
+                f"{SAMANTAN_URL}/collaborateurs-de-samantan",
+                follow_redirects=True,
+                timeout=20.0,
+            )
+
+            if r.status_code != 200 or "connexion" in str(r.url):
+                logger.warning(f"Page collaborateurs inaccessible : {r.status_code} | {r.url}")
+                return resultat
+
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            # ── Parser les tableaux de collaborateurs ──────────────────────────
+            tables = soup.find_all("table")
+            for table in tables:
+                entetes = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+                for row in table.find_all("tr"):
+                    cells = [td.get_text(strip=True) for td in row.find_all("td")]
+                    cells = [c for c in cells if c]
+                    if not cells:
+                        continue
+
+                    collaborateur = {}
+                    if entetes and len(entetes) == len(cells):
+                        for k, v in zip(entetes, cells):
+                            collaborateur[k] = v
+                    else:
+                        # Format sans en-têtes : détecter par contenu
+                        for cell in cells:
+                            if "@" in cell:
+                                collaborateur["email"] = cell
+                            elif re.match(r'^[+\d]{8,15}$', cell.replace(" ", "")):
+                                collaborateur["telephone"] = cell.replace(" ", "").lstrip("+")
+                            elif len(cell) > 3:
+                                collaborateur.setdefault("nom", cell)
+
+                    if collaborateur.get("nom") or collaborateur.get("email"):
+                        # Normaliser le téléphone (sans +, sans @c.us)
+                        tel = collaborateur.get("telephone", "")
+                        tel = re.sub(r'[^\d]', '', tel)
+                        collaborateur["telephone"] = tel
+                        resultat["opticiens"].append(collaborateur)
+
+            # ── Fallback : chercher dans les listes ul/li ──────────────────────
+            if not resultat["opticiens"]:
+                for ul in soup.find_all(["ul", "ol"]):
+                    for li in ul.find_all("li"):
+                        texte = li.get_text(strip=True)
+                        if len(texte) > 5:
+                            collaborateur = {"nom": texte}
+                            # Chercher email et téléphone dans le texte
+                            email_match = re.search(r'[\w.+-]+@[\w-]+\.\w+', texte)
+                            tel_match = re.search(r'[+\d][\d\s]{7,14}', texte)
+                            if email_match:
+                                collaborateur["email"] = email_match.group()
+                            if tel_match:
+                                tel = re.sub(r'[^\d]', '', tel_match.group())
+                                collaborateur["telephone"] = tel
+                            resultat["opticiens"].append(collaborateur)
+
+            logger.info(f"Collaborateurs trouvés : {len(resultat['opticiens'])}")
+
+        except Exception as e:
+            logger.warning(f"Erreur scraping collaborateurs : {e}")
+            return resultat
+
+    # ── Sauvegarder dans knowledge/collaborateurs.json ────────────────────────
+    import json
+    COLLABORATEURS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    COLLABORATEURS_FILE.write_text(
+        json.dumps(resultat, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+    logger.info(f"Collaborateurs sauvegardés → {COLLABORATEURS_FILE} "
+                f"({len(resultat['opticiens'])} opticiens)")
+
+    return resultat
+
+
+def charger_collaborateurs() -> dict:
+    """
+    Charge la liste des collaborateurs depuis knowledge/collaborateurs.json.
+    Retourne un dict vide si le fichier n'existe pas encore.
+    """
+    import json
+    try:
+        if COLLABORATEURS_FILE.exists():
+            return json.loads(COLLABORATEURS_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"Erreur chargement collaborateurs : {e}")
+    return {"opticiens": [], "admins": []}
+
+
+def identifier_utilisateur(telephone: str) -> dict | None:
+    """
+    Identifie un utilisateur WhatsApp par son numéro de téléphone.
+    Retourne le dict collaborateur si trouvé, None sinon.
+
+    Args:
+        telephone: Numéro WhatsApp normalisé (ex: "221XXXXXXXX")
+
+    Returns:
+        {"nom": "OPTIQUE PONTY", "telephone": "221XXXXXXXX", "email": "...", ...}
+        ou None si l'utilisateur n'est pas dans la liste des collaborateurs
+    """
+    tel_normalise = re.sub(r'[^\d]', '', telephone)
+    collaborateurs = charger_collaborateurs()
+
+    for opticien in collaborateurs.get("opticiens", []):
+        tel_opticien = re.sub(r'[^\d]', '', opticien.get("telephone", ""))
+        if tel_normalise and tel_opticien and (
+            tel_normalise == tel_opticien
+            or tel_normalise.endswith(tel_opticien[-8:])
+            or tel_opticien.endswith(tel_normalise[-8:])
+        ):
+            return opticien
+
+    for admin in collaborateurs.get("admins", []):
+        tel_admin = re.sub(r'[^\d]', '', admin.get("telephone", ""))
+        if tel_normalise and tel_admin and (
+            tel_normalise == tel_admin
+            or tel_normalise.endswith(tel_admin[-8:])
+        ):
+            return {**admin, "role": "admin"}
+
+    return None
+
+
 # ── Simulation de prix par opticien (ancienne méthode via formulaire) ──────────
 
 async def simuler_prix_par_opticien() -> dict:
