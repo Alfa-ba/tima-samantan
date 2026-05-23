@@ -303,22 +303,62 @@ async def _telecharger_image_base64(url: str) -> tuple[str, str] | None:
         return None
 
 
-async def _telecharger_pdf_base64(url: str) -> str | None:
-    """Télécharge un PDF depuis une URL et retourne son base64. None si échec."""
-    import base64
+async def _telecharger_fichier(url: str) -> bytes | None:
+    """Télécharge un fichier depuis une URL et retourne ses bytes bruts. None si échec."""
     import httpx
     try:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
             r = await http.get(url)
             if r.status_code != 200:
-                logger.warning(f"PDF inaccessible : HTTP {r.status_code}")
+                logger.warning(f"Fichier inaccessible : HTTP {r.status_code}")
                 return None
-            b64 = base64.standard_b64encode(r.content).decode("utf-8")
-            logger.info(f"PDF téléchargé : {len(r.content)} bytes")
-            return b64
+            logger.info(f"Fichier téléchargé : {len(r.content)} bytes")
+            return r.content
     except Exception as e:
-        logger.warning(f"Erreur téléchargement PDF : {e}")
+        logger.warning(f"Erreur téléchargement fichier : {e}")
         return None
+
+
+def _extraire_texte_docx(contenu: bytes) -> str:
+    """Extrait le texte d'un fichier Word (.docx)."""
+    import io
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(contenu))
+        lignes = [p.text for p in doc.paragraphs if p.text.strip()]
+        # Extraire aussi les tableaux
+        for table in doc.tables:
+            for row in table.rows:
+                cellules = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cellules:
+                    lignes.append(" | ".join(cellules))
+        texte = "\n".join(lignes)
+        logger.info(f"Word extrait : {len(texte)} chars")
+        return texte
+    except Exception as e:
+        logger.warning(f"Erreur extraction Word : {e}")
+        return ""
+
+
+def _extraire_texte_xlsx(contenu: bytes) -> str:
+    """Extrait les données d'un fichier Excel (.xlsx)."""
+    import io
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(contenu), data_only=True)
+        lignes = []
+        for ws in wb.worksheets:
+            lignes.append(f"=== Feuille : {ws.title} ===")
+            for row in ws.iter_rows(values_only=True):
+                cellules = [str(c) for c in row if c is not None]
+                if cellules:
+                    lignes.append(" | ".join(cellules))
+        texte = "\n".join(lignes)
+        logger.info(f"Excel extrait : {len(texte)} chars")
+        return texte
+    except Exception as e:
+        logger.warning(f"Erreur extraction Excel : {e}")
+        return ""
 
 
 async def generar_respuesta(
@@ -384,35 +424,57 @@ async def generar_respuesta(
     for msg in historial:
         mensajes.append({"role": msg["role"], "content": msg["content"]})
 
-    # ── Construction du message courant (PDF prioritaire, puis image) ─────────
+    # ── Construction du message courant (document, puis image) ────────────────
     if documento_url:
-        pdf_b64 = await _telecharger_pdf_base64(documento_url)
-        if pdf_b64:
-            contenu_user = [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": pdf_b64,
-                    },
-                },
-                {
-                    "type": "text",
-                    "text": mensaje.strip() or (
-                        "Voici un document PDF. Si c'est une ordonnance optique, lis attentivement "
-                        "et extrais les valeurs présentes : OD (Sph/Cyl/Axe), OG (Sph/Cyl/Axe), "
-                        "Addition, DIP. N'invente aucune valeur absente. Demande confirmation "
-                        "avant toute commande."
-                    ),
-                },
-            ]
-            mensajes.append({"role": "user", "content": contenu_user})
-        else:
+        url_lower = documento_url.lower()
+        consigne_ordonnance = (
+            "Si c'est une ordonnance optique, lis attentivement et extrais les valeurs "
+            "présentes : OD (Sph/Cyl/Axe), OG (Sph/Cyl/Axe), Addition, DIP. "
+            "N'invente aucune valeur absente. 'pl'/'plan' = sphère 0.00. "
+            "Demande confirmation avant toute commande."
+        )
+        contenu_fichier = await _telecharger_fichier(documento_url)
+
+        if not contenu_fichier:
             mensajes.append({
                 "role": "user",
-                "content": mensaje.strip() or "J'ai reçu un PDF mais je n'arrive pas à l'ouvrir. Peux-tu le renvoyer ?",
+                "content": mensaje.strip() or "J'ai reçu un fichier mais je n'arrive pas à l'ouvrir. Peux-tu le renvoyer ?",
             })
+        elif url_lower.endswith(".pdf") or ".pdf" in url_lower:
+            # PDF → bloc document natif Claude
+            import base64
+            pdf_b64 = base64.standard_b64encode(contenu_fichier).decode("utf-8")
+            mensajes.append({
+                "role": "user",
+                "content": [
+                    {"type": "document", "source": {
+                        "type": "base64", "media_type": "application/pdf", "data": pdf_b64}},
+                    {"type": "text", "text": mensaje.strip() or f"Voici un document PDF. {consigne_ordonnance}"},
+                ],
+            })
+        elif url_lower.endswith((".docx", ".doc")) or ".docx" in url_lower or ".doc" in url_lower:
+            # Word → extraction texte
+            texte_doc = _extraire_texte_docx(contenu_fichier)
+            if texte_doc:
+                mensajes.append({
+                    "role": "user",
+                    "content": f"{mensaje.strip()}\n\n[Contenu du document Word reçu]\n{texte_doc}\n\n{consigne_ordonnance}".strip(),
+                })
+            else:
+                mensajes.append({"role": "user", "content": "J'ai reçu un document Word mais je n'arrive pas à lire son contenu. Peux-tu me l'envoyer en PDF ou en photo ?"})
+        elif url_lower.endswith((".xlsx", ".xls")) or ".xlsx" in url_lower or ".xls" in url_lower:
+            # Excel → extraction données
+            texte_xls = _extraire_texte_xlsx(contenu_fichier)
+            if texte_xls:
+                mensajes.append({
+                    "role": "user",
+                    "content": f"{mensaje.strip()}\n\n[Contenu du fichier Excel reçu]\n{texte_xls}\n\n{consigne_ordonnance}".strip(),
+                })
+            else:
+                mensajes.append({"role": "user", "content": "J'ai reçu un fichier Excel mais je n'arrive pas à lire son contenu. Peux-tu me l'envoyer en PDF ou en photo ?"})
+        else:
+            # Type inconnu → tenter comme PDF par défaut
+            mensajes.append({"role": "user", "content": mensaje.strip() or "J'ai reçu un fichier dont je ne reconnais pas le format. Tu peux me l'envoyer en PDF ou en photo ?"})
     elif imagen_url:
         img = await _telecharger_image_base64(imagen_url)
         if img:
