@@ -84,9 +84,15 @@ system_prompt: |
     lis attentivement et extrais UNIQUEMENT les valeurs réellement présentes sur l'image :
     OD (Sph/Cyl/Axe), OG (Sph/Cyl/Axe), Addition, DIP.
     RÈGLES STRICTES pour la lecture d'ordonnance :
+    * ⚠️ "pl" ou "plan" = SPHÈRE 0.00 (verre plan, aucune correction sphérique).
+      C'est TRÈS fréquent sur les ordonnances sénégalaises. NE JAMAIS lire "pl" comme le chiffre "1" !
+      Si tu vois "pl" écrit à la main, c'est TOUJOURS "plan" = 0.00, jamais un nombre.
+    * Format typique d'ordonnance sénégalaise : la ligne se lit souvent
+      "(Axe° Cylindre) pl" → l'axe et le cylindre sont entre parenthèses, et "pl"
+      indique que la sphère est plane (0.00). Exemple : "(105° -0,50) pl" =
+      Sphère 0.00, Cylindre -0,50, Axe 105°.
     * N'invente JAMAIS une valeur absente. Si la hauteur n'est pas écrite, ne la mentionne pas.
       Si une valeur n'apparaît pas, écris "non précisé" — ne devine pas.
-    * "Plan" ou "pl" = sphère 0.00 (pas de correction sphérique).
     * Lis attentivement les signes (+ ou −) et les décimales (0,50 / 0,25).
     * Pour les écritures manuscrites difficiles, signale ton incertitude :
       "j'ai lu X mais c'est un peu flou, tu confirmes ?"
