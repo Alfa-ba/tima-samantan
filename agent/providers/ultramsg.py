@@ -64,24 +64,21 @@ class ProveedorUltraMsg(ProveedorWhatsApp):
         msg_id   = data.get("id", "")
         msg_body = data.get("body", "").strip()
 
-        es_propio = bool(data.get("fromMe") or data.get("from_me"))
+        # Ignorer les messages envoyés par nous-mêmes
+        if data.get("fromMe") or data.get("from_me"):
+            return []
 
-        # Pour les messages SORTANTS (fromMe) : le client est dans "to", pas "from"
-        # Pour les messages ENTRANTS : le client est dans "from"
-        if es_propio:
-            msg_to = data.get("to", "")
-            telefono = msg_to.split("@")[0] if "@" in msg_to else msg_to
-        else:
-            telefono = msg_from.split("@")[0] if "@" in msg_from else msg_from
+        # Normaliser le numéro : "221XXXXXXXX@c.us" → "221XXXXXXXX"
+        telefono = msg_from.split("@")[0] if "@" in msg_from else msg_from
 
         if msg_type == "chat" and msg_body:
             mensajes.append(MensajeEntrante(
                 telefono=telefono,
                 texto=msg_body,
                 mensaje_id=msg_id,
-                es_propio=es_propio,
+                es_propio=False,
             ))
-        elif msg_type in ["ptt", "audio"] and not es_propio:
+        elif msg_type in ["ptt", "audio"]:
             # Message vocal — pas de transcription UltraMsg pour l'instant
             logger.info(f"Message vocal reçu de {telefono} (non transcrit)")
 
