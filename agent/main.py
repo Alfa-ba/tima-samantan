@@ -889,9 +889,37 @@ async def webhook_verificacion(request: Request):
 _messages_traites: set = set()
 
 
+import re as _re
+
+def _est_message_broadcast(texte: str) -> bool:
+    """
+    Détecte les messages broadcast du type "Bonjour [NOM OPTICIEN]"
+    que Tima doit ignorer silencieusement (sans répondre).
+
+    Exemples ignorés :
+      "Bonjour OPTIQUE PONTY"
+      "Bonjour Junior Optique,"
+      "Bonjour Cher client"
+    """
+    if not texte:
+        return False
+    texte_strip = texte.strip()
+    # Commence par "Bonjour" suivi d'un nom (maj, tiret, virgule tolérés)
+    pattern = r'^[Bb]onjour[\s,]+[A-ZÀÂÇÉÈÊËÎÏÔÛÙÜŸÆŒ][A-Za-zÀ-ÿ\s\-\'\.]{1,60}[,.]?\s*$'
+    return bool(_re.match(pattern, texte_strip))
+
+
 async def _traiter_message(msg, prov) -> None:
     """Traite un message en arrière-plan — Claude + envoi réponse."""
     try:
+        # ── Ignorer les messages broadcast "Bonjour [NOM]" ────────────────────
+        if _est_message_broadcast(msg.texto):
+            logger.info(
+                f"Message broadcast ignoré (Bonjour + nom) "
+                f"de {msg.telefono} : '{msg.texto[:60]}'"
+            )
+            return  # Pas de réponse, pas de sauvegarde
+
         logger.info(f"Traitement message de {msg.telefono} : {msg.texto}")
         historial = await obtener_historial(msg.telefono)
         respuesta = await generar_respuesta(msg.texto, historial, telefono=msg.telefono)
