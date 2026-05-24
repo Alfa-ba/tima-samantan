@@ -85,8 +85,102 @@ TOOLS = [
             },
             "required": []
         }
+    },
+    {
+        "name": "enregistrer_nouvel_opticien",
+        "description": (
+            "Enregistre un NOUVEL opticien (pas encore client/activé chez SAMANTAN) et "
+            "transmet ses informations à l'équipe SAMANTAN pour activation de son compte. "
+            "⚠️ N'appeler QU'UNE SEULE FOIS, et UNIQUEMENT quand TOUTES les infos obligatoires "
+            "ont été collectées auprès de l'opticien : nom de la boutique, nom du responsable, "
+            "téléphone et email. Ne JAMAIS appeler s'il manque une de ces infos obligatoires, "
+            "et ne JAMAIS inventer une valeur manquante."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nom_boutique": {
+                    "type": "string",
+                    "description": "Nom de la boutique ou du cabinet optique (obligatoire)"
+                },
+                "nom_responsable": {
+                    "type": "string",
+                    "description": "Nom du responsable / gérant de la boutique (obligatoire)"
+                },
+                "telephone": {
+                    "type": "string",
+                    "description": "Numéro de téléphone de contact de l'opticien (obligatoire)"
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email principal de l'opticien (obligatoire)"
+                },
+                "email_facturation": {
+                    "type": "string",
+                    "description": "Email de facturation s'il est différent de l'email principal (facultatif)"
+                },
+                "adresse": {
+                    "type": "string",
+                    "description": "Adresse ou ville de la boutique (facultatif)"
+                }
+            },
+            "required": ["nom_boutique", "nom_responsable", "telephone", "email"]
+        }
+    },
+    {
+        "name": "transmettre_client_final",
+        "description": (
+            "Transmet la demande d'un CLIENT FINAL / porteur de verre (un particulier, PAS un "
+            "opticien professionnel) à l'opticien partenaire YELETA OPTIC et à l'équipe SAMANTAN. "
+            "SAMANTAN ne vend qu'aux opticiens : le client final doit passer par un partenaire. "
+            "Appeler quand tu as collecté au minimum le téléphone et le besoin du client. "
+            "Inclure aussi l'ordonnance, l'assurance, la monture souhaitée et ta recommandation "
+            "si tu les as. N'invente JAMAIS une information non fournie par le client."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nom": {
+                    "type": "string",
+                    "description": "Nom du client final (facultatif)"
+                },
+                "telephone": {
+                    "type": "string",
+                    "description": "Numéro de téléphone du client (obligatoire)"
+                },
+                "besoin": {
+                    "type": "string",
+                    "description": "Ce que cherche le client (ex: vision de loin, progressif, solaire) (obligatoire)"
+                },
+                "ordonnance": {
+                    "type": "string",
+                    "description": "Valeurs de l'ordonnance si fournies (OD/OG Sph/Cyl/Axe, Add...) ou 'photo reçue'"
+                },
+                "assurance": {
+                    "type": "string",
+                    "description": "Assureur / mutuelle du client s'il en a une"
+                },
+                "monture": {
+                    "type": "string",
+                    "description": "Préférence de monture / choix exprimé par le client"
+                },
+                "recommandation": {
+                    "type": "string",
+                    "description": "Conseil de Tima : produit/indice/traitement adaptés au besoin du client"
+                }
+            },
+            "required": ["telephone", "besoin"]
+        }
     }
 ]
+
+# Numéro WhatsApp de l'équipe SAMANTAN qui reçoit les demandes d'inscription
+# des nouveaux opticiens (overridable via la variable d'environnement ONBOARDING_PHONE).
+ONBOARDING_PHONE = os.getenv("ONBOARDING_PHONE", "221775434816")
+
+# Opticien partenaire qui reçoit les leads de clients finaux / porteurs de verre.
+YELETA_PHONE = os.getenv("YELETA_PHONE", "221771961316")
+YELETA_MAPS = "https://www.google.com/maps/search/?api=1&query=YELETA+OPTIC+Dakar"
 
 
 def cargar_config_prompts() -> dict:
@@ -213,7 +307,7 @@ def _extraire_texte(content: list) -> str:
     return ""
 
 
-async def _executer_outil(nom: str, parametres: dict) -> str:
+async def _executer_outil(nom: str, parametres: dict, telefono: str = "") -> str:
     """Exécute un outil demandé par Claude et retourne le résultat."""
 
     if nom == "consulter_catalogue_samantan":
@@ -233,7 +327,190 @@ async def _executer_outil(nom: str, parametres: dict) -> str:
         logger.info(f"Tima consulte les ordonnances SAMANTAN (recherche: '{recherche}')")
         return await fetch_ordonnances_samantan(recherche)
 
+    if nom == "enregistrer_nouvel_opticien":
+        return await _enregistrer_nouvel_opticien(parametres, telefono)
+
+    if nom == "transmettre_client_final":
+        return await _transmettre_client_final(parametres, telefono)
+
     return "Outil inconnu."
+
+
+def _enregistrer_demande_localement(infos: dict, fichier: str = "knowledge/demandes_inscription.json") -> None:
+    """
+    Sauvegarde une demande (inscription opticien ou lead client final) dans un
+    fichier JSON local — file d'attente utile si l'envoi WhatsApp échoue ou pour archive.
+    """
+    import json
+    from datetime import datetime
+    try:
+        chemin = Path(fichier)
+        chemin.parent.mkdir(parents=True, exist_ok=True)
+        demandes = []
+        if chemin.exists():
+            try:
+                demandes = json.loads(chemin.read_text(encoding="utf-8"))
+            except Exception:
+                demandes = []
+        infos = {**infos, "date": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        demandes.append(infos)
+        chemin.write_text(json.dumps(demandes, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Impossible d'enregistrer la demande localement : {e}")
+
+
+async def _enregistrer_nouvel_opticien(params: dict, telefono_expediteur: str = "") -> str:
+    """
+    Transmet la demande d'inscription d'un nouvel opticien à l'équipe SAMANTAN
+    (numéro ONBOARDING_PHONE) via WhatsApp, et archive la demande localement.
+    """
+    nom_boutique     = (params.get("nom_boutique") or "").strip()
+    nom_responsable  = (params.get("nom_responsable") or "").strip()
+    telephone        = (params.get("telephone") or "").strip() or telefono_expediteur
+    email            = (params.get("email") or "").strip()
+    email_facturation = (params.get("email_facturation") or "").strip()
+    adresse          = (params.get("adresse") or "").strip()
+
+    # Sécurité : vérifier que les infos obligatoires sont bien présentes
+    manquants = [n for n, v in [
+        ("nom de la boutique", nom_boutique),
+        ("nom du responsable", nom_responsable),
+        ("téléphone", telephone),
+        ("email", email),
+    ] if not v]
+    if manquants:
+        return f"INFOS_MANQUANTES: Il manque encore : {', '.join(manquants)}. Demande-les avant d'enregistrer."
+
+    # ── Construire le message destiné à l'équipe SAMANTAN ──────────────────────
+    lignes = [
+        "🆕 NOUVELLE DEMANDE D'INSCRIPTION OPTICIEN",
+        "",
+        f"Boutique     : {nom_boutique}",
+        f"Responsable  : {nom_responsable}",
+        f"Téléphone    : {telephone}",
+        f"Email        : {email}",
+    ]
+    if email_facturation:
+        lignes.append(f"Email factu. : {email_facturation}")
+    if adresse:
+        lignes.append(f"Adresse      : {adresse}")
+    if telefono_expediteur:
+        lignes.append(f"WhatsApp     : {telefono_expediteur}")
+    lignes.append("")
+    lignes.append("→ Compte à activer dans l'espace SAMANTAN.")
+    message_admin = "\n".join(lignes)
+
+    infos = {
+        "nom_boutique": nom_boutique,
+        "nom_responsable": nom_responsable,
+        "telephone": telephone,
+        "email": email,
+        "email_facturation": email_facturation,
+        "adresse": adresse,
+        "whatsapp": telefono_expediteur,
+    }
+    _enregistrer_demande_localement(infos)
+
+    # ── Envoyer à l'équipe SAMANTAN via le proveedor WhatsApp ──────────────────
+    try:
+        from agent.providers import obtener_proveedor
+        proveedor = obtener_proveedor()
+        envoye = await proveedor.enviar_mensaje(ONBOARDING_PHONE, message_admin)
+        if envoye:
+            logger.info(f"Demande d'inscription transmise à l'équipe SAMANTAN ({ONBOARDING_PHONE}) ✓")
+            return (
+                "INSCRIPTION_TRANSMISE: Les informations ont bien été transmises à l'équipe "
+                "SAMANTAN. Dis maintenant à l'opticien d'attendre l'activation de son compte — "
+                "un opérateur reviendra vers lui."
+            )
+        logger.error(f"Échec envoi demande d'inscription à {ONBOARDING_PHONE}")
+        return (
+            "INSCRIPTION_NOTEE: Les informations sont bien notées et seront transmises à "
+            "l'équipe SAMANTAN. Dis à l'opticien d'attendre l'activation de son compte."
+        )
+    except Exception as e:
+        logger.error(f"Erreur transmission demande d'inscription : {e}")
+        return (
+            "INSCRIPTION_NOTEE: Les informations sont bien notées et seront transmises à "
+            "l'équipe SAMANTAN. Dis à l'opticien d'attendre l'activation de son compte."
+        )
+
+
+async def _transmettre_client_final(params: dict, telefono_expediteur: str = "") -> str:
+    """
+    Transmet le lead d'un client final / porteur de verre à l'opticien partenaire
+    YELETA OPTIC (YELETA_PHONE) ET à l'équipe SAMANTAN (ONBOARDING_PHONE), via WhatsApp.
+    Archive également la demande localement.
+    """
+    nom            = (params.get("nom") or "").strip()
+    telephone      = (params.get("telephone") or "").strip() or telefono_expediteur
+    besoin         = (params.get("besoin") or "").strip()
+    ordonnance     = (params.get("ordonnance") or "").strip()
+    assurance      = (params.get("assurance") or "").strip()
+    monture        = (params.get("monture") or "").strip()
+    recommandation = (params.get("recommandation") or "").strip()
+
+    # Sécurité : téléphone + besoin obligatoires
+    manquants = [n for n, v in [("téléphone", telephone), ("besoin", besoin)] if not v]
+    if manquants:
+        return f"INFOS_MANQUANTES: Il manque encore : {', '.join(manquants)}. Demande-les avant de transmettre."
+
+    # ── Construire le message pour YELETA OPTIC + équipe SAMANTAN ──────────────
+    lignes = ["👓 NOUVEAU CLIENT FINAL (porteur de verre)", ""]
+    if nom:
+        lignes.append(f"Nom        : {nom}")
+    lignes.append(f"Téléphone  : {telephone}")
+    lignes.append(f"Besoin     : {besoin}")
+    if ordonnance:
+        lignes.append(f"Ordonnance : {ordonnance}")
+    if assurance:
+        lignes.append(f"Assurance  : {assurance}")
+    if monture:
+        lignes.append(f"Monture    : {monture}")
+    if recommandation:
+        lignes.append(f"Conseil Tima : {recommandation}")
+    if telefono_expediteur:
+        lignes.append(f"WhatsApp   : {telefono_expediteur}")
+    lignes.append("")
+    lignes.append("→ Client à recontacter pour finaliser sa commande de verres.")
+    message = "\n".join(lignes)
+
+    _enregistrer_demande_localement({
+        "nom": nom, "telephone": telephone, "besoin": besoin,
+        "ordonnance": ordonnance, "assurance": assurance, "monture": monture,
+        "recommandation": recommandation, "whatsapp": telefono_expediteur,
+    }, fichier="knowledge/demandes_clients_finaux.json")
+
+    # ── Envoyer à YELETA OPTIC + équipe SAMANTAN ───────────────────────────────
+    try:
+        from agent.providers import obtener_proveedor
+        proveedor = obtener_proveedor()
+        resultats = []
+        for dest in (YELETA_PHONE, ONBOARDING_PHONE):
+            try:
+                ok = await proveedor.enviar_mensaje(dest, message)
+            except Exception as e:
+                logger.error(f"Erreur envoi lead client final à {dest} : {e}")
+                ok = False
+            resultats.append(ok)
+            logger.info(f"Lead client final → {dest} : {'OK' if ok else 'ÉCHEC'}")
+
+        if any(resultats):
+            return (
+                "CLIENT_TRANSMIS: La demande a été transmise à l'opticien partenaire YELETA OPTIC "
+                "et à l'équipe SAMANTAN. Dis au client que YELETA OPTIC le recontactera pour "
+                "finaliser, et qu'il peut aussi s'y rendre directement."
+            )
+        return (
+            "CLIENT_NOTE: La demande est bien notée et sera transmise à YELETA OPTIC et à l'équipe "
+            "SAMANTAN. Dis au client qu'il sera recontacté, et oriente-le vers YELETA OPTIC."
+        )
+    except Exception as e:
+        logger.error(f"Erreur transmission client final : {e}")
+        return (
+            "CLIENT_NOTE: La demande est bien notée et sera transmise à YELETA OPTIC et à l'équipe "
+            "SAMANTAN. Dis au client qu'il sera recontacté, et oriente-le vers YELETA OPTIC."
+        )
 
 
 def _chercher_prix_opticien(nom_opticien: str) -> str:
@@ -405,15 +682,62 @@ async def generar_respuesta(
                 )
                 logger.info(f"Utilisateur identifié : {nom} ({role}) — {telefono}")
             else:
-                # Utilisateur non reconnu — accès limité
+                # Utilisateur non reconnu → déterminer opticien pro vs client final
                 utilisateur_info = (
-                    f"\n\n## Utilisateur non identifié\n"
-                    f"- Téléphone : {telefono}\n"
-                    f"- ⚠️ Cet utilisateur n'est pas dans la liste des collaborateurs SAMANTAN. "
-                    f"Ne pas divulguer d'informations confidentielles (prix, ordonnances, clients). "
-                    f"Répondre uniquement aux questions générales sur SAMANTAN."
+                    f"\n\n## Contact NON identifié — déterminer le type AVANT d'agir\n"
+                    f"- Téléphone WhatsApp : {telefono}\n"
+                    f"- Ce contact n'est PAS un opticien activé chez SAMANTAN. Deux cas possibles :\n"
+                    f"\n"
+                    f"  ### A) C'est un OPTICIEN PROFESSIONNEL (boutique/cabinet, commande pour des "
+                    f"patients, demande le catalogue ou ses prix pro) → MODE INSCRIPTION\n"
+                    f"  - AVANT toute discussion produits/prix/ordonnances, tu DOIS créer son dossier.\n"
+                    f"  - Accueille-le, explique que tu enregistres d'abord sa boutique, puis collecte "
+                    f"les infos obligatoires UNE PAR UNE (une seule question à la fois) :\n"
+                    f"      1. Nom de la boutique / cabinet   2. Nom du responsable\n"
+                    f"      3. Numéro de téléphone            4. Email principal\n"
+                    f"    (Email de facturation = facultatif, seulement après les 4 obligatoires.)\n"
+                    f"  - Tant que les 4 infos ne sont pas réunies, ne réponds pas aux questions "
+                    f"produits/prix : explique que tu finalises d'abord l'inscription.\n"
+                    f"  - Quand les 4 infos sont réunies, appelle l'outil `enregistrer_nouvel_opticien` "
+                    f"(UNE seule fois, sans inventer de valeur).\n"
+                    f"  - ⚠️ N'affirme JAMAIS que l'inscription est transmise sans avoir RÉELLEMENT "
+                    f"appelé l'outil : sans l'appel, rien n'arrive à l'équipe. Appelle l'outil AVANT "
+                    f"d'annoncer la transmission.\n"
+                    f"  - Après l'outil (INSCRIPTION_TRANSMISE / INSCRIPTION_NOTEE) : dis-lui que sa "
+                    f"demande est transmise, qu'il doit ATTENDRE l'activation de son compte, et qu'un "
+                    f"opérateur reviendra vers lui.\n"
+                    f"\n"
+                    f"  ### B) C'est un CLIENT FINAL / porteur de verres (veut des lunettes pour "
+                    f"lui-même) → ORIENTATION VERS UN PARTENAIRE + COLLECTE\n"
+                    f"  - SAMANTAN ne vend QU'AUX opticiens professionnels : un particulier ne commande "
+                    f"pas directement. Explique-le gentiment et RASSURE-le — verres SAMANTAN haut de "
+                    f"gamme, FreeForm sur mesure, il sera très bien servi.\n"
+                    f"  - Oriente-le vers un opticien PARTENAIRE pour se procurer ses verres :\n"
+                    f"      • YELETA OPTIC — Tél : 77 196 13 16 — {YELETA_MAPS}\n"
+                    f"      • Autres partenaires possibles : SENEGOPT, Alain Afflelou.\n"
+                    f"  - Tu PEUX donner des CONSEILS (type de verre, indice, traitement, monture) mais "
+                    f"JAMAIS de prix ni de vente directe.\n"
+                    f"  - Collecte ces infos UNE par UNE, naturellement :\n"
+                    f"      1. Son ordonnance (il peut envoyer une photo — lis-la) ou ses valeurs Rx\n"
+                    f"      2. S'il a une assurance / mutuelle, et laquelle\n"
+                    f"      3. Son numéro de téléphone\n"
+                    f"      4. Son besoin (vision de loin, près, progressif, solaire...)\n"
+                    f"      5. Une idée de la monture / du choix qu'il souhaite\n"
+                    f"  - Donne-lui une recommandation adaptée (produit / indice / traitement).\n"
+                    f"  - Quand tu as AU MOINS le téléphone ET le besoin, appelle l'outil "
+                    f"`transmettre_client_final` (inclus tout ce que tu as : ordonnance, assurance, "
+                    f"monture, ta recommandation). N'invente rien.\n"
+                    f"  - ⚠️ N'affirme JAMAIS avoir transmis le dossier sans avoir RÉELLEMENT appelé "
+                    f"l'outil `transmettre_client_final` : sans l'appel, rien n'est envoyé à YELETA ni "
+                    f"à l'équipe. Donc appelle TOUJOURS l'outil AVANT de dire que c'est transmis.\n"
+                    f"  - Après l'outil (CLIENT_TRANSMIS / CLIENT_NOTE) : dis-lui que sa demande est "
+                    f"transmise à YELETA OPTIC qui le recontactera, et qu'il peut aussi s'y rendre directement.\n"
+                    f"\n"
+                    f"  ⚠️ En cas de doute sur le type, demande gentiment : « Vous êtes opticien "
+                    f"professionnel, ou vous cherchez des lunettes pour vous-même ? »\n"
+                    f"  ⚠️ Ne donne AUCUN prix ni donnée confidentielle à un contact non activé."
                 )
-                logger.info(f"Utilisateur non reconnu : {telefono}")
+                logger.info(f"Contact non reconnu → triage opticien/client : {telefono}")
         except Exception as e:
             logger.warning(f"Erreur identification utilisateur {telefono} : {e}")
 
@@ -561,7 +885,7 @@ async def generar_respuesta(
             # Exécuter chaque outil et construire les tool_results
             tool_results = []
             for tool_block in tool_blocks:
-                resultat = await _executer_outil(tool_block.name, tool_block.input)
+                resultat = await _executer_outil(tool_block.name, tool_block.input, telefono)
                 logger.info(
                     f"  ↳ {tool_block.name} → {len(resultat)} chars"
                 )
