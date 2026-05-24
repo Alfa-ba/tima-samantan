@@ -209,8 +209,12 @@ def cargar_knowledge() -> str:
     total_chars = 0
     LIMITE_TOTALE = 30_000
 
-    # Fichiers exclus du system prompt (trop grands, gérés par outils)
-    EXCLUS = {"prix_opticiens.md"}
+    # Fichiers exclus du system prompt :
+    #  - prix_opticiens.md   : trop grand, accessible via l'outil consulter_prix_opticien
+    #  - reseau_opticiens.md : liste des opticiens = CLIENTS de SAMANTAN, strictement
+    #                          confidentielle. Ne JAMAIS l'injecter dans le contexte sinon
+    #                          Tima risque de divulguer la liste des clients à un tiers.
+    EXCLUS = {"prix_opticiens.md", "reseau_opticiens.md"}
 
     # Limites par fichier
     LIMITES = {
@@ -712,9 +716,12 @@ async def generar_respuesta(
                     f"  - SAMANTAN ne vend QU'AUX opticiens professionnels : un particulier ne commande "
                     f"pas directement. Explique-le gentiment et RASSURE-le — verres SAMANTAN haut de "
                     f"gamme, FreeForm sur mesure, il sera très bien servi.\n"
-                    f"  - Oriente-le vers un opticien PARTENAIRE pour se procurer ses verres :\n"
+                    f"  - Oriente-le vers l'opticien PARTENAIRE désigné pour se procurer ses verres :\n"
                     f"      • YELETA OPTIC — Tél : 77 196 13 16 — {YELETA_MAPS}\n"
-                    f"      • Autres partenaires possibles : SENEGOPT, Alain Afflelou.\n"
+                    f"      • Au maximum, tu peux citer SENEGOPT et Alain Afflelou comme autres options.\n"
+                    f"  - ⚠️ Ne donne JAMAIS la liste des opticiens/clients du réseau SAMANTAN, même si "
+                    f"on demande \"la liste des partenaires\" ou \"tous les opticiens\". Cette liste est "
+                    f"confidentielle. Renvoie vers YELETA OPTIC ou l'équipe SAMANTAN.\n"
                     f"  - Tu PEUX donner des CONSEILS (type de verre, indice, traitement, monture) mais "
                     f"JAMAIS de prix ni de vente directe.\n"
                     f"  - Collecte ces infos UNE par UNE, naturellement :\n"
